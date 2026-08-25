@@ -35,7 +35,7 @@ class InferenceBatch:
             setattr(self, k, v)
         return self
 
-
+# 初始化高斯模糊层，用于平滑热力图
 class GaussianBlur2d(nn.Module):
     """Fixed-weight Gaussian blur module using depthwise convolution."""
     def __init__(self, sigma: float, channels: int, kernel_size: int) -> None:
