@@ -14,14 +14,14 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
     try:
         import numpy
-    except ImportError:
+    except Exception:
         numpy = None
     if numpy is not None:
         numpy.random.seed(seed)
 
     try:
         import torch
-    except ImportError:
+    except Exception:
         torch = None
     if torch is not None:
         torch.manual_seed(seed)
