@@ -1,0 +1,18 @@
+{
+  "model": {
+    "encoder_name": "vit_base_patch14_reg4_dinov2",
+    "bottleneck_dropout": 0.2,
+    "decoder_depth": 8,
+    "target_layers": null,
+    "fuse_layer_encoder": null,
+    "fuse_layer_decoder": null,
+    "remove_class_token": false,
+    "use_context_recentering": false,
+    "precision": "float32",
+    "encoder_pretrained_path": "model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth"
+  },
+  "training": {
+    "batch_size": 8,
+    "max_steps": 5000
+  }
+}
