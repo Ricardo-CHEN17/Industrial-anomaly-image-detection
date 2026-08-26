@@ -1,48 +1,53 @@
 # src/utils/normalization.py
-"""Min-max normalization utilities for anomaly scores.
+"""Min-max 线性归一化工具。
 
-This module provides utilities for min-max normalization of anomaly scores.
-The main function :func:`normalize` scales values to [0,1] range and centers them
-around a threshold. It supports both NumPy arrays and PyTorch tensors.
+提供 :func:`normalize`，将异常分数线性映射到 [0,1] 区间：
+``(score - min_val) / (max_val - min_val)``，训练集最小分数映射到 0、
+最大分数映射到 1，分数越大代表越异常。支持标量、NumPy 数组与 PyTorch 张量。
 """
+
+from __future__ import annotations
 
 import numpy as np
 import torch
 
 
 def normalize(
-    targets: np.ndarray | np.float32 | torch.Tensor,
-    threshold: float | np.ndarray | torch.Tensor,
-    min_val: float | np.ndarray | torch.Tensor,
-    max_val: float | np.ndarray | torch.Tensor,
-) -> np.ndarray | torch.Tensor:
-    """Apply min-max normalization and center values around a threshold.
-
-    This function performs min-max normalization on the input values and shifts them
-    such that the threshold value is centered at 0.5. The output is clipped to the
-    range [0,1].
+    score: float | int | np.ndarray | torch.Tensor,
+    min_val: float | int | np.ndarray | torch.Tensor,
+    max_val: float | int | np.ndarray | torch.Tensor,
+) -> float | np.ndarray | torch.Tensor:
+    """将异常分数线性归一化到 [0,1] 区间。
 
     Args:
-        targets: Input values to normalize (NumPy array or PyTorch tensor).
-        threshold: Threshold value that will be centered at 0.5 after normalization.
-        min_val: Minimum value used for normalization scaling.
-        max_val: Maximum value used for normalization scaling.
+        score: 待归一化的异常分数（标量、NumPy 数组或 PyTorch 张量）。
+        min_val: 训练集正常分数的最小值，映射到 0。
+        max_val: 训练集正常分数的最大值，映射到 1。
 
     Returns:
-        Normalized values in range [0,1] with threshold centered at 0.5.
-        Output type matches input type.
+        归一化后的分数，类型与输入 ``score`` 一致（标量输入返回 float）。
 
     Raises:
-        TypeError: If ``targets`` is neither a NumPy array nor PyTorch tensor.
+        TypeError: 如果 ``score`` 不是标量、NumPy 数组或 PyTorch 张量。
     """
-    normalized = ((targets - threshold) / (max_val - min_val)) + 0.5
-    if isinstance(targets, (np.ndarray, np.float32, np.float64)):
-        normalized = np.minimum(normalized, 1)
-        normalized = np.maximum(normalized, 0)
-    elif isinstance(targets, torch.Tensor):
-        normalized = torch.minimum(normalized, torch.tensor(1, device=targets.device))
-        normalized = torch.maximum(normalized, torch.tensor(0, device=targets.device))
-    else:
-        msg = f"Targets must be either Tensor or Numpy array. Received {type(targets)}"
-        raise TypeError(msg)
-    return normalized
+    if max_val <= min_val:
+        return _invalid_range_result(score)
+
+    result = (score - min_val) / (max_val - min_val)
+
+    if isinstance(result, torch.Tensor):
+        return torch.clamp(result, 0.0, 1.0)
+    if isinstance(result, np.ndarray):
+        return np.clip(result, 0.0, 1.0)
+    if isinstance(result, (float, int, np.floating, np.integer)):
+        return min(max(float(result), 0.0), 1.0)
+    raise TypeError(f"score 必须是标量、NumPy 数组或 PyTorch 张量。Received {type(score)}")
+
+
+def _invalid_range_result(score: float | int | np.ndarray | torch.Tensor) -> float | np.ndarray | torch.Tensor:
+    """分数范围无效（max_val <= min_val）时返回与输入类型匹配的 0.5。"""
+    if isinstance(score, torch.Tensor):
+        return torch.full_like(score, 0.5, dtype=torch.float32)
+    if isinstance(score, np.ndarray):
+        return np.full_like(score, 0.5, dtype=np.float32)
+    return 0.5
