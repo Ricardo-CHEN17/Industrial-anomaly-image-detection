@@ -1,14 +1,3 @@
-# src/models/dinomaly/components/layers.py
-"""Consolidated layer implementations for Dinomaly model.
-
-This module contains all layer-level components used in the Dinomaly Vision Transformer
-architecture, including attention mechanisms, transformer blocks, and MLP layers.
-
-References:
-    https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
-    https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
-"""
-
 import logging
 from collections.abc import Callable
 from typing import Any

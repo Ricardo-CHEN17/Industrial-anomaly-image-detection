@@ -1,16 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-# Copyright (C) 2025 Meta Platforms, Inc. and affiliates.
-# SPDX-License-Identifier: Apache-2.0
-
-"""LayerScale module used in DINOv2.
-
-LayerScale applies a learnable per-channel scaling parameter (gamma)
-to stabilize deep transformer training. It is frequently used in
-Vision Transformers with residual connections.
-"""
-
 import torch
 from torch import nn
 

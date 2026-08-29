@@ -1,19 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-# Copyright (C) 2025 Meta Platforms, Inc. and affiliates.
-# SPDX-License-Identifier: Apache-2.0
-
-"""Attention layers for DINOv2 Vision Transformers.
-
-This module provides:
-- A standard multi-head self-attention implementation (`Attention`)
-- A memory-efficient xFormers-based version (`MemEffAttention`) when xFormers is available
-
-These layers are used as core components within DINOv2 and Dinomaly transformer
-blocks for feature extraction and masked modeling.
-"""
-
 import logging
 
 import torch
@@ -112,14 +96,6 @@ class Attention(nn.Module):
 
 
 class MemEffAttention(Attention):
-    """Memory-efficient attention from the dinov2 implementation with a small change.
-
-    Reference:
-    https://github.com/facebookresearch/dinov2/blob/592541c8d842042bb5ab29a49433f73b544522d5/dinov2/eval/segmentation_m2f/models/backbones/vit.py#L159
-
-    Instead of using xformers's memory_efficient_attention() method, which requires adding a new dependency to anomalib,
-    this implementation uses the scaled dot product from torch.
-    """
 
     def forward(self, x: torch.Tensor, attn_bias: torch.Tensor | None = None) -> torch.Tensor:
         """Compute memory-efficient attention using PyTorch's scaled dot product attention.

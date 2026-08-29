@@ -1,12 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-"""Cosine Hard Mining Loss for training Dinomaly model.
-
-The code is based on the `global_cosine_hm_percent()` method in the original dinomaly implementation
-Reference: https://github.com/guojiajeremy/Dinomaly/blob/861a99b227fd2813b6ad8e8c703a7bea139ab735/utils.py#L70C5-L70C29
-"""
-
 from functools import partial
 
 import torch

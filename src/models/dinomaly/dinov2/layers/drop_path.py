@@ -1,16 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-# Copyright (C) 2025 Meta Platforms, Inc. and affiliates.
-# SPDX-License-Identifier: Apache-2.0
-
-"""Stochastic depth drop-path implementation used in DINOv2.
-
-This module provides a functional drop-path operation and a corresponding
-nn.Module wrapper. Drop-path (also known as stochastic depth) randomly
-drops entire residual branches during training to improve model robustness.
-"""
-
 import torch
 from torch import nn
 

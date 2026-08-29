@@ -11,7 +11,13 @@ from src.core.manifest import ManifestSample
 
 
 def _load_image(path: Path) -> np.ndarray:
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    # 使用 np.fromfile 和 cv2.imdecode 避免中文路径问题
+    try:
+        img_array = np.fromfile(str(path), dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    except Exception as exc:
+        raise RuntimeError(f"图像读取失败: {path}: {exc}") from exc
+
     if img is None:
         raise FileNotFoundError(f"图像读取失败: {path}")
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

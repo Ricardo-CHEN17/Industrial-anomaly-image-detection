@@ -1,14 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-"""Learning rate scheduler and optimizer for the Dinomaly model.
-
-This module contains the WarmCosineScheduler and StableAdamW classes.
-The code is based on the original dinomaly implementation:
-https://github.com/guojiajeremy/Dinomaly/
-
-"""
-
 import math
 from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias

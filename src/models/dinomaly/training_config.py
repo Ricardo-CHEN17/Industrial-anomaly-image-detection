@@ -4,11 +4,12 @@ from typing import Any
 # 默认训练超参数（优化器、调度器、训练器配置）
 TRAINING_CONFIG: dict[str, Any] = {
     "optimizer": {
-        "lr": 2e-3,
+        "lr": 1e-3,
         "betas": (0.9, 0.999),
         "weight_decay": 1e-4,
         "amsgrad": True,
         "eps": 1e-8,
+        "clip_threshold": 1.0,
     },
     "scheduler": {
         "base_value": 2e-3,

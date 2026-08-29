@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from src.core.args import AppConfig
+from src.core.config import ConfigError
 from src.core.logging import setup_logging
 from src.core.manifest import load_manifest
 from src.core.seed import set_seed
@@ -35,14 +36,106 @@ _MODEL_PARAMS = (
 )
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """递归合并两个字典，override（配置）优先，base（回退）兜底。"""
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _coerce_training_params(
+    optimizer_cfg: dict[str, Any],
+    scheduler_cfg: dict[str, Any],
+    trainer_cfg: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """校验并类型转换训练超参数，配置非法时抛出 ConfigError。"""
+    optimizer = dict(optimizer_cfg)
+    try:
+        optimizer["lr"] = float(optimizer["lr"])
+        betas = optimizer["betas"]
+        if not isinstance(betas, (list, tuple)) or len(betas) != 2:
+            raise ValueError("betas 必须为长度 2 的数组 [beta1, beta2]")
+        optimizer["betas"] = (float(betas[0]), float(betas[1]))
+        optimizer["weight_decay"] = float(optimizer["weight_decay"])
+        optimizer["amsgrad"] = bool(optimizer["amsgrad"])
+        optimizer["eps"] = float(optimizer["eps"])
+        optimizer["clip_threshold"] = float(optimizer["clip_threshold"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"optimizer 配置非法: {exc}") from exc
+
+    scheduler = dict(scheduler_cfg)
+    try:
+        scheduler["base_value"] = float(scheduler["base_value"])
+        scheduler["final_value"] = float(scheduler["final_value"])
+        scheduler["warmup_iters"] = int(scheduler["warmup_iters"])
+        if scheduler["warmup_iters"] < 0:
+            raise ValueError("warmup_iters 不能为负")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"scheduler 配置非法: {exc}") from exc
+
+    trainer = dict(trainer_cfg)
+    try:
+        trainer["gradient_clip_val"] = float(trainer["gradient_clip_val"])
+        trainer["max_steps"] = int(trainer["max_steps"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"trainer 配置非法: {exc}") from exc
+
+    return optimizer, scheduler, trainer
+
+
+def _merge_training_params(
+    training_params: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """合并配置与 TRAINING_CONFIG 回退并校验类型，返回 (optimizer, scheduler, trainer)。
+
+    配置中的值优先；TRAINING_CONFIG 仅作为缺省回退。
+    """
+    optimizer_cfg = _deep_merge(
+        TRAINING_CONFIG["optimizer"], training_params.get("optimizer", {})
+    )
+    scheduler_cfg = _deep_merge(
+        TRAINING_CONFIG["scheduler"], training_params.get("scheduler", {})
+    )
+    trainer_cfg = _deep_merge(
+        TRAINING_CONFIG["trainer"], training_params.get("trainer", {})
+    )
+    return _coerce_training_params(optimizer_cfg, scheduler_cfg, trainer_cfg)
+
+
+def _resolve_scheduler_total_iters(
+    training_params: dict[str, Any], total_steps: int
+) -> int:
+    """解析 scheduler 总迭代数。
+
+    规则：配置中显式设置 ``scheduler.total_iters > 0`` 则使用该值；
+    否则（缺省 / null / 0）自动推导为 ``total_steps``。
+    """
+    configured = (training_params.get("scheduler") or {}).get("total_iters")
+    if configured and int(configured) > 0:
+        return int(configured)
+    return int(total_steps)
+
+
 def create_optimizer_and_scheduler(
     model: torch.nn.Module,
     total_steps: int,
+    training_params: dict[str, Any] | None = None,
 ) -> tuple[list[torch.optim.Optimizer], list[Any]]:
-    optimizer_cfg = TRAINING_CONFIG["optimizer"]
-    scheduler_cfg = TRAINING_CONFIG["scheduler"]
+    training_params = training_params or {}
     if total_steps <= 0:
         raise ValueError(f"total_steps 必须为正整数: {total_steps}")
+
+    optimizer_cfg, scheduler_cfg, _ = _merge_training_params(training_params)
+    scheduler_total_iters = _resolve_scheduler_total_iters(training_params, total_steps)
+    if scheduler_cfg["warmup_iters"] > scheduler_total_iters:
+        raise ConfigError(
+            f"scheduler 配置非法: warmup_iters ({scheduler_cfg['warmup_iters']}) "
+            f"不能大于 total_iters ({scheduler_total_iters})"
+        )
 
     optimizer = StableAdamW(
         [param for param in model.parameters() if param.requires_grad],
@@ -51,12 +144,13 @@ def create_optimizer_and_scheduler(
         weight_decay=optimizer_cfg["weight_decay"],
         amsgrad=optimizer_cfg["amsgrad"],
         eps=optimizer_cfg["eps"],
+        clip_threshold=optimizer_cfg["clip_threshold"],
     )
     scheduler = WarmCosineScheduler(
         optimizer,
         base_value=scheduler_cfg["base_value"],
         final_value=scheduler_cfg["final_value"],
-        total_iters=total_steps,
+        total_iters=scheduler_total_iters,
         warmup_iters=scheduler_cfg["warmup_iters"],
     )
     return [optimizer], [scheduler]
@@ -176,13 +270,15 @@ def run_training(config: AppConfig) -> None:
 
         model = _build_model(config).to(config.device)
 
-        total_steps = int(
-            config.training_params.get("max_steps", TRAINING_CONFIG["trainer"]["max_steps"])
+        _, _, trainer_cfg = _merge_training_params(config.training_params)
+        raw_steps = config.training_params.get("max_steps")
+        total_steps = int(raw_steps) if raw_steps else int(trainer_cfg["max_steps"])
+        optimizer_list, scheduler_list = create_optimizer_and_scheduler(
+            model, total_steps, config.training_params
         )
-        optimizer_list, scheduler_list = create_optimizer_and_scheduler(model, total_steps)
         optimizer = optimizer_list[0]
         scheduler = scheduler_list[0]
-        clip_val = float(TRAINING_CONFIG["trainer"]["gradient_clip_val"])
+        clip_val = float(trainer_cfg["gradient_clip_val"])
 
         model.train()
         current_step = 0

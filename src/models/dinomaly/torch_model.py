@@ -1,10 +1,3 @@
-# src/models/dinomaly/torch_model.py
-"""PyTorch model for the Dinomaly model implementation.
-
-Adapted from anomalib's Dinomaly implementation.
-Removed Lightning and anomalib dependencies; now uses only PyTorch + timm.
-"""
-
 from __future__ import annotations
 
 from functools import partial
@@ -167,7 +160,32 @@ DINO_ARCHITECTURES = {
     "huge": {"embed_dim": 1280, "num_heads": 20, "target_layers": [3, 9, 12, 15, 18, 21, 24, 27]},
 }
 
-DEFAULT_FUSE_LAYERS = [[0, 1, 2, 3], [4, 5, 6, 7]]
+def _derive_fuse_layers(n_features: int) -> list[list[int]]:
+    """根据特征层数自动切分两组融合层索引。
+
+    与原始 8 层默认值 [[0,1,2,3],[4,5,6,7]] 保持兼容：
+    8 层 → [[0,1,2,3],[4,5,6,7]]；6 层 → [[0,1,2],[3,4,5]]。
+    """
+    if n_features <= 1:
+        return [list(range(n_features))]
+    mid = (n_features + 1) // 2
+    return [list(range(mid)), list(range(mid, n_features))]
+
+
+def _validate_fuse_layers(
+    fuse_layers: list[list[int]], n_features: int, name: str
+) -> None:
+    """校验融合层索引是否在有效范围内，避免越界导致 list index out of range。"""
+    if not fuse_layers:
+        raise ValueError(f"{name} 不能为空")
+    for group in fuse_layers:
+        for idx in group:
+            if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0 or idx >= n_features:
+                raise ValueError(
+                    f"{name} 中的索引 {idx!r} 超出有效范围 [0, {n_features - 1}]"
+                    f"（当前特征层数为 {n_features}，请检查 decoder_depth / target_layers 与 fuse 配置是否匹配）"
+                )
+
 
 DEFAULT_RESIZE_SIZE = 256
 DEFAULT_GAUSSIAN_KERNEL_SIZE = 5
@@ -209,8 +227,25 @@ class DinomalyModel(nn.Module):
 
         self.target_layers = arch_config["target_layers"] if target_layers is None else target_layers
 
-        self.fuse_layer_encoder = DEFAULT_FUSE_LAYERS if fuse_layer_encoder is None else fuse_layer_encoder
-        self.fuse_layer_decoder = DEFAULT_FUSE_LAYERS if fuse_layer_decoder is None else fuse_layer_decoder
+        self.fuse_layer_encoder = (
+            _derive_fuse_layers(len(self.target_layers))
+            if fuse_layer_encoder is None
+            else fuse_layer_encoder
+        )
+        self.fuse_layer_decoder = (
+            _derive_fuse_layers(decoder_depth)
+            if fuse_layer_decoder is None
+            else fuse_layer_decoder
+        )
+        _validate_fuse_layers(
+            self.fuse_layer_encoder, len(self.target_layers), "fuse_layer_encoder"
+        )
+        _validate_fuse_layers(self.fuse_layer_decoder, decoder_depth, "fuse_layer_decoder")
+        if len(self.fuse_layer_encoder) != len(self.fuse_layer_decoder):
+            raise ValueError(
+                f"fuse_layer_encoder 与 fuse_layer_decoder 的分组数必须一致: "
+                f"{len(self.fuse_layer_encoder)} vs {len(self.fuse_layer_decoder)}"
+            )
 
         # Create encoder (our custom TimmFeatureExtractor)
         self.encoder = TimmFeatureExtractor(
