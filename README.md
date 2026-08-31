@@ -114,7 +114,7 @@ This file must be present **before** training. It is downloaded manually and bun
 | Item | Value |
 | --- | --- |
 | Source URL | `https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth` |
-| SHA256 | `0cefd5cc021528a63aa7c8e758e3800c06f48d18790d440970bfadcae1203ecd` |
+| SHA256 | `73182a088cf94833c94b1666d1c99e02fe87e2007bff57b564fb6206e25dba71` |
 
 Download it on a networked machine, place it at the path above, and verify the checksum (PowerShell):
 
@@ -122,7 +122,7 @@ Download it on a networked machine, place it at the path above, and verify the c
 Get-FileHash model\auxiliary\pretrained\dinov2_vitb14_reg4_pretrain.pth -Algorithm SHA256
 ```
 
-The output `Hash` value must equal `0cefd5cc021528a63aa7c8e758e3800c06f48d18790d440970bfadcae1203ecd`.
+The output `Hash` value must equal `73182a088cf94833c94b1666d1c99e02fe87e2007bff57b564fb6206e25dba71`.
 
 For a fully offline environment, install dependencies without network access:
 
@@ -141,9 +141,11 @@ Required columns:
 - `category` — the anomaly category label
 - `image_path` — path to the image, **relative to `--data-root`**
 
-For inference (`strict=True`), the manifest must also contain:
+For inference (`strict=True`), the manifest must also contain a unique sample
+identifier used for output file names, under either column name:
 
-- `sample_id` — unique sample identifier (used for output file names)
+- `image_name` — unique sample identifier
+- `sample_id` — accepted alias for `image_name`
 
 Example `manifest.csv`:
 

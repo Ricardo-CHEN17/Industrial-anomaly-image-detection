@@ -3,7 +3,7 @@
     {
       "filename": "model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth",
       "source": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth",
-      "sha256": "0cefd5cc021528a63aa7c8e758e3800c06f48d18790d440970bfadcae1203ecd"
+      "sha256": "73182a088cf94833c94b1666d1c99e02fe87e2007bff57b564fb6206e25dba71"
     }
   ]
 }

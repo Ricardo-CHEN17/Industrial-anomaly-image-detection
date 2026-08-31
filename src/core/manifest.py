@@ -36,8 +36,9 @@ def load_manifest(manifest_path: Path, strict: bool = True) -> list[ManifestSamp
             raise ManifestError(f"manifest 缺少必需列: {', '.join(sorted(missing))}")
 
         has_image_name = "image_name" in reader.fieldnames
-        if not has_image_name and strict:
-            raise ManifestError("manifest 缺少必需列: image_name")
+        has_sample_id = "sample_id" in reader.fieldnames
+        if strict and not has_image_name and not has_sample_id:
+            raise ManifestError("manifest 缺少必需列: image_name（或 sample_id）")
 
         for row in reader:
             if all(value is None or value.strip() == "" for value in row.values()):
@@ -48,9 +49,9 @@ def load_manifest(manifest_path: Path, strict: bool = True) -> list[ManifestSamp
             if not category or not image_path:
                 raise ManifestError("manifest 行存在空字段: category 或 image_path")
 
-            image_name = (row.get("image_name") or "").strip()
+            image_name = (row.get("image_name") or row.get("sample_id") or "").strip()
             if not image_name and strict:
-                raise ManifestError("manifest 行存在空字段: image_name")
+                raise ManifestError("manifest 行存在空字段: image_name（或 sample_id）")
 
             samples.append(
                 ManifestSample(image_name=image_name, category=category, image_path=Path(image_path))

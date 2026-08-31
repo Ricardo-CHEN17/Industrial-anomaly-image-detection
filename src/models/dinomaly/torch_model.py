@@ -111,9 +111,7 @@ class TimmFeatureExtractor(nn.Module):
 
         # Load local pretrained weights if provided
         if pretrained_path is not None:
-            state_dict = torch.load(pretrained_path, map_location="cpu")
-            if "state_dict" in state_dict:
-                state_dict = state_dict["state_dict"]
+            state_dict = self._load_pretrained_state_dict(pretrained_path)
             self.model.load_state_dict(state_dict, strict=True)
         else:
             raise ValueError("pretrained_path must be provided for offline inference.")
@@ -136,6 +134,28 @@ class TimmFeatureExtractor(nn.Module):
                 lambda module, input, output, name=layer_name: self._features.__setitem__(name, output)
             )
             self._hook_handles.append(handle)
+
+    @staticmethod
+    def _load_pretrained_state_dict(pretrained_path: str) -> dict[str, torch.Tensor]:
+        """Load a pretrained checkpoint and adapt official DINOv2 keys to timm format.
+
+        Official DINOv2 checkpoints use ``register_tokens``/``mask_token`` and include
+        the class-token position in ``pos_embed``, while timm's ViT model expects
+        ``reg_token`` and a patch-only ``pos_embed``.
+        """
+        state_dict = torch.load(pretrained_path, map_location="cpu")
+        if "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+
+        if "register_tokens" in state_dict or "mask_token" in state_dict:
+            state_dict = dict(state_dict)
+            if "register_tokens" in state_dict:
+                state_dict["reg_token"] = state_dict.pop("register_tokens")
+            state_dict.pop("mask_token", None)
+            pos_embed = state_dict.get("pos_embed")
+            if pos_embed is not None and pos_embed.shape[1] == 1370:
+                state_dict["pos_embed"] = pos_embed[:, 1:]
+        return state_dict
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         self._features.clear()
