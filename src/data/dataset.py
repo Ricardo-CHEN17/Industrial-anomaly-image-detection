@@ -57,7 +57,7 @@ class ManifestDataset(torch.utils.data.Dataset):
 
         item: dict[str, Any] = {
             "image": image,
-            "sample_id": sample.sample_id,
+            "image_name": sample.image_name,
             "category": sample.category,
         }
         if original_size is not None:

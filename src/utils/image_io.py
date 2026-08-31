@@ -6,6 +6,18 @@ import cv2
 import numpy as np
 
 
+def save_float32_npy(anomaly_map: np.ndarray, save_path: Path) -> None:
+    if anomaly_map.ndim == 3:
+        anomaly_map = np.squeeze(anomaly_map)
+    if anomaly_map.ndim != 2:
+        raise ValueError(f"anomaly_map 必须是 (H, W) 或 (1, H, W)，当前形状: {anomaly_map.shape}")
+
+    clipped = np.clip(anomaly_map, 0.0, 1.0).astype(np.float32)
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(save_path, clipped)
+
+
 def save_16bit_png(anomaly_map: np.ndarray, save_path: Path) -> None:
     if anomaly_map.ndim == 3:
         anomaly_map = np.squeeze(anomaly_map)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ManifestSample:
-    sample_id: str
+    image_name: str
     category: str
     image_path: Path
 
@@ -35,9 +35,9 @@ def load_manifest(manifest_path: Path, strict: bool = True) -> list[ManifestSamp
         if missing:
             raise ManifestError(f"manifest 缺少必需列: {', '.join(sorted(missing))}")
 
-        has_sample_id = "sample_id" in reader.fieldnames
-        if not has_sample_id and strict:
-            raise ManifestError("manifest 缺少必需列: sample_id")
+        has_image_name = "image_name" in reader.fieldnames
+        if not has_image_name and strict:
+            raise ManifestError("manifest 缺少必需列: image_name")
 
         for row in reader:
             if all(value is None or value.strip() == "" for value in row.values()):
@@ -48,12 +48,12 @@ def load_manifest(manifest_path: Path, strict: bool = True) -> list[ManifestSamp
             if not category or not image_path:
                 raise ManifestError("manifest 行存在空字段: category 或 image_path")
 
-            sample_id = (row.get("sample_id") or "").strip()
-            if not sample_id and strict:
-                raise ManifestError("manifest 行存在空字段: sample_id")
+            image_name = (row.get("image_name") or "").strip()
+            if not image_name and strict:
+                raise ManifestError("manifest 行存在空字段: image_name")
 
             samples.append(
-                ManifestSample(sample_id=sample_id, category=category, image_path=Path(image_path))
+                ManifestSample(image_name=image_name, category=category, image_path=Path(image_path))
             )
 
     return samples

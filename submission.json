@@ -1,5 +1,5 @@
 {
-  "spec_version": "omniad-school-1.0",
+  "spec_version": "omniad-school-1.1",
   "team_id": "无言以队",
   "seed": 2026,
   "train_entry": "src/train.py",
