@@ -159,7 +159,10 @@ def create_optimizer_and_scheduler(
 def _get_encoder_pretrained_path(config: AppConfig) -> Path:
     configured = config.model_params.get("encoder_pretrained_path")
     if configured:
-        return Path(configured)
+        path = Path(configured)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return path
     return (
         Path(__file__).resolve().parents[2]
         / "model"

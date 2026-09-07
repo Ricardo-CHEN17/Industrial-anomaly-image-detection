@@ -39,7 +39,7 @@ def parse_cli_args(train_mode: bool, argv: list[str] | None = None) -> argparse.
     parser.add_argument("--manifest", type=Path, required=True, help="manifest 文件路径")
     parser.add_argument("--output-dir", type=Path, required=True, help="输出目录")
     parser.add_argument("--device", type=str, required=True, help="计算设备")
-    parser.add_argument("--num-workers", type=int, required=True, help="数据加载进程数")
+    parser.add_argument("--num-workers", type=int, default=4, help="数据加载进程数")
     if train_mode:
         parser.add_argument("--seed", type=int, required=True, help="随机种子")
     else:

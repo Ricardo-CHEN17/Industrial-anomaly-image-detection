@@ -52,9 +52,10 @@ def run_inference(config: AppConfig) -> None:
                 score = float(output.pred_score.detach().cpu().item())
                 score = normalize(score, min_val=score_min, max_val=score_max)
 
-                anomaly_map = np.squeeze(output.anomaly_map.detach().cpu().numpy())
+                anomaly_map_np = np.squeeze(output.anomaly_map.detach().cpu().numpy())
+                anomaly_map = normalize(anomaly_map_np, min_val=score_min, max_val=score_max)
                 if anomaly_map.ndim != 2:
-                    raise RuntimeError(f"anomaly_map 形状非法: {output.anomaly_map.shape}")
+                    raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
 
                 category_dir = config.output_dir / category
                 map_rel = Path("pred_maps") / Path(image_name).with_suffix(".npy")
