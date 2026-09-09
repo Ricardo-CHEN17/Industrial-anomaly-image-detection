@@ -11,7 +11,7 @@ import torch
 from src.core.args import AppConfig
 from src.core.manifest import load_manifest
 from src.data.dataset import ManifestDataset
-from src.data.transforms import get_dinomaly_transforms
+from src.data.transforms import get_dinomaly_transforms, DEFAULT_IMAGE_SIZE, DEFAULT_CROP_SIZE
 from src.models.builder import load_model_from_dir
 from src.utils.image_io import save_float32_npy
 from src.utils.normalization import normalize
@@ -59,9 +59,9 @@ def run_inference(config: AppConfig) -> None:
                 if anomaly_map.ndim != 2:
                     raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
 
-                # 撤销 CenterCrop(392) 对应的形变：将其恢复到 448x448 的 Resize() 输出尺寸
+                # 撤销 CenterCrop 对应的形变：将其恢复到 Resize() 后的完整尺寸
                 # 这样官方评测脚本将整图长边调整为 512 时，能与 Ground Truth 精准空间对齐
-                pad_size = (448 - 392) // 2
+                pad_size = (DEFAULT_IMAGE_SIZE - DEFAULT_CROP_SIZE) // 2
                 anomaly_map = np.pad(anomaly_map, ((pad_size, pad_size), (pad_size, pad_size)), mode='constant', constant_values=0.0)
 
                 category_dir = config.output_dir / category
