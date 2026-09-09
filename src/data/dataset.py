@@ -44,9 +44,25 @@ class ManifestDataset(torch.utils.data.Dataset):
         image_path = self.data_root / sample.image_path
         image = _load_image(image_path)
 
-        original_size: tuple[int, int] | None = None
-        if self.return_original_size:
-            original_size = (image.shape[0], image.shape[1])
+        original_size = (image.shape[0], image.shape[1])
+        h, w = original_size
+        
+        # Letterbox 几何一致性变换
+        target_size = 392
+        scale = min(target_size / h, target_size / w)
+        new_h, new_w = int(round(h * scale)), int(round(w * scale))
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        pad_top = (target_size - new_h) // 2
+        pad_bottom = target_size - new_h - pad_top
+        pad_left = (target_size - new_w) // 2
+        pad_right = target_size - new_w - pad_left
+        
+        # 使用 ImageNet mean (约 124, 116, 104) 填充，避免黑边高频响应
+        image = cv2.copyMakeBorder(
+            image, pad_top, pad_bottom, pad_left, pad_right, 
+            cv2.BORDER_CONSTANT, value=[124, 116, 104]
+        )
 
         if self.transform is not None:
             # torchvision v2 变换（torchvision 0.28）对 numpy 数组是 no-op，
@@ -59,7 +75,7 @@ class ManifestDataset(torch.utils.data.Dataset):
             "image": image,
             "image_name": sample.image_name,
             "category": sample.category,
+            "original_size": original_size,
+            "padding": (pad_top, pad_bottom, pad_left, pad_right),
         }
-        if original_size is not None:
-            item["original_size"] = original_size
         return item

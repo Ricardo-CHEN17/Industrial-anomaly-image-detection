@@ -5,13 +5,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 
 from src.core.args import AppConfig
 from src.core.manifest import load_manifest
 from src.data.dataset import ManifestDataset
-from src.data.transforms import get_dinomaly_transforms, DEFAULT_IMAGE_SIZE, DEFAULT_CROP_SIZE
+from src.data.transforms import get_dinomaly_transforms
 from src.models.builder import load_model_from_dir
 from src.utils.image_io import save_float32_npy
 from src.utils.normalization import normalize
@@ -59,10 +60,17 @@ def run_inference(config: AppConfig) -> None:
                 if anomaly_map.ndim != 2:
                     raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
 
-                # 撤销 CenterCrop 对应的形变：将其恢复到 Resize() 后的完整尺寸
-                # 这样官方评测脚本将整图长边调整为 512 时，能与 Ground Truth 精准空间对齐
-                pad_size = (DEFAULT_IMAGE_SIZE - DEFAULT_CROP_SIZE) // 2
-                anomaly_map = np.pad(anomaly_map, ((pad_size, pad_size), (pad_size, pad_size)), mode='constant', constant_values=0.0)
+                # 获取原图尺寸与 padding 参数
+                orig_h, orig_w = batch["original_size"][0].item(), batch["original_size"][1].item()
+                pad_top, pad_bottom, pad_left, pad_right = (
+                    batch["padding"][0].item(), batch["padding"][1].item(), 
+                    batch["padding"][2].item(), batch["padding"][3].item()
+                )
+
+                # 1. 裁剪掉 Letterbox 的 Padding 区域
+                anomaly_map = anomaly_map[pad_top : 392 - pad_bottom, pad_left : 392 - pad_right]
+                # 2. 还原回原图真实分辨率
+                anomaly_map = cv2.resize(anomaly_map, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
 
                 category_dir = config.output_dir / category
                 map_rel = Path("pred_maps") / Path(image_name).with_suffix(".npy")
