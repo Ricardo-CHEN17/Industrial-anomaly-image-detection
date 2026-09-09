@@ -184,18 +184,26 @@ def _compute_score_stats(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: str,
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float]:
     model.eval()
-    scores: list[torch.Tensor] = []
+    image_scores: list[torch.Tensor] = []
+    pixel_scores: list[torch.Tensor] = []
     with torch.inference_mode():
         for batch in dataloader:
             images = batch["image"].to(device)
             output = model(images)
-            scores.append(output.pred_score.detach().cpu())
-    if not scores:
+            image_scores.append(output.pred_score.detach().cpu())
+            pixel_scores.append(output.anomaly_map.detach().cpu())
+    if not image_scores:
         raise RuntimeError("无法计算分数统计：dataloader 为空")
-    all_scores = torch.cat(scores)
-    return float(all_scores.min().item()), float(all_scores.max().item())
+    all_image_scores = torch.cat(image_scores)
+    all_pixel_scores = torch.cat(pixel_scores)
+    return (
+        float(all_image_scores.min().item()),
+        float(all_image_scores.max().item()),
+        float(all_pixel_scores.min().item()),
+        float(all_pixel_scores.max().item()),
+    )
 
 
 def _save_checkpoint(model: torch.nn.Module, output_dir: Path, config: AppConfig) -> None:
@@ -314,12 +322,15 @@ def run_training(config: AppConfig) -> None:
             num_workers=config.num_workers,
             drop_last=False,
         )
-        score_min, score_max = _compute_score_stats(model, stats_loader, config.device)
+        score_min, score_max, pixel_min, pixel_max = _compute_score_stats(model, stats_loader, config.device)
         thresholds_dir = config.output_dir / "auxiliary" / "thresholds"
         thresholds_dir.mkdir(parents=True, exist_ok=True)
         minmax_path = thresholds_dir / "minmax.json"
         with minmax_path.open("w", encoding="utf-8") as f:
-            json.dump({"min": score_min, "max": score_max}, f, indent=2)
+            json.dump({
+                "min": score_min, "max": score_max,
+                "pixel_min": pixel_min, "pixel_max": pixel_max
+            }, f, indent=2)
 
         _copy_pretrained_encoder(config, config.output_dir)
         _save_checkpoint(model, config.output_dir, config)

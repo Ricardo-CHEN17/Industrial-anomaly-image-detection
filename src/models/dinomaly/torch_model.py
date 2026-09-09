@@ -374,12 +374,11 @@ class DinomalyModel(nn.Module):
             return self.loss_fn(encoder_features=en, decoder_features=de, global_step=global_step)
 
         anomaly_map, _ = self.calculate_anomaly_maps(en, de, out_size=image_size)
+        anomaly_map = self.gaussian_blur(anomaly_map)
         anomaly_map_resized = anomaly_map.clone()
 
         if DEFAULT_RESIZE_SIZE is not None:
             anomaly_map = F.interpolate(anomaly_map, size=DEFAULT_RESIZE_SIZE, mode="bilinear", align_corners=False)
-
-        anomaly_map = self.gaussian_blur(anomaly_map)
 
         if DEFAULT_MAX_RATIO == 0:
             sp_score = torch.max(anomaly_map.flatten(1), dim=1)[0]

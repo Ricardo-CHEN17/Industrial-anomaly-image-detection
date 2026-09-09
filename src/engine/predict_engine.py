@@ -36,6 +36,8 @@ def run_inference(config: AppConfig) -> None:
     model = bundle.model
     score_min = bundle.score_min
     score_max = bundle.score_max
+    pixel_min = bundle.pixel_min
+    pixel_max = bundle.pixel_max
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,9 +55,14 @@ def run_inference(config: AppConfig) -> None:
                 score = normalize(score, min_val=score_min, max_val=score_max)
 
                 anomaly_map_np = np.squeeze(output.anomaly_map.detach().cpu().numpy())
-                anomaly_map = normalize(anomaly_map_np, min_val=score_min, max_val=score_max)
+                anomaly_map = normalize(anomaly_map_np, min_val=pixel_min, max_val=pixel_max)
                 if anomaly_map.ndim != 2:
                     raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
+
+                # 撤销 CenterCrop(392) 对应的形变：将其恢复到 448x448 的 Resize() 输出尺寸
+                # 这样官方评测脚本将整图长边调整为 512 时，能与 Ground Truth 精准空间对齐
+                pad_size = (448 - 392) // 2
+                anomaly_map = np.pad(anomaly_map, ((pad_size, pad_size), (pad_size, pad_size)), mode='constant', constant_values=0.0)
 
                 category_dir = config.output_dir / category
                 map_rel = Path("pred_maps") / Path(image_name).with_suffix(".npy")

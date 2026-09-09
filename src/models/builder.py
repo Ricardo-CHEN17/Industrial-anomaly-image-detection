@@ -37,6 +37,8 @@ class ModelBundle:
     model: torch.nn.Module
     score_min: float
     score_max: float
+    pixel_min: float
+    pixel_max: float
     categories: list[str] | None = None
 
 
@@ -56,7 +58,7 @@ def _load_model_manifest(model_dir: Path) -> dict[str, Any]:
     return manifest
 
 
-def _load_score_range(model_dir: Path) -> tuple[float, float]:
+def _load_score_range(model_dir: Path) -> tuple[float, float, float, float]:
     minmax_path = model_dir / MINMAX_PATH
     if not minmax_path.exists():
         raise ModelLoadError(f"归一化参数文件不存在: {minmax_path}")
@@ -68,13 +70,19 @@ def _load_score_range(model_dir: Path) -> tuple[float, float]:
 
     min_val = data.get("min")
     max_val = data.get("max")
+    pixel_min = data.get("pixel_min", 0.0) # Fallback if missing
+    pixel_max = data.get("pixel_max", 1.0)
+    
     if not isinstance(min_val, (int, float)) or isinstance(min_val, bool):
         raise ModelLoadError(f"minmax 参数缺少合法的 min 字段: {minmax_path}")
     if not isinstance(max_val, (int, float)) or isinstance(max_val, bool):
         raise ModelLoadError(f"minmax 参数缺少合法的 max 字段: {minmax_path}")
     if float(min_val) >= float(max_val):
         raise ModelLoadError(f"minmax 参数 min 必须小于 max: {min_val!r} >= {max_val!r}")
-    return float(min_val), float(max_val)
+    if float(pixel_min) >= float(pixel_max):
+        raise ModelLoadError(f"minmax 参数 pixel_min 必须小于 pixel_max: {pixel_min!r} >= {pixel_max!r}")
+        
+    return float(min_val), float(max_val), float(pixel_min), float(pixel_max)
 
 
 def _build_model(model_dir: Path, config: dict[str, Any]) -> DinomalyModel:
@@ -92,7 +100,7 @@ def load_model_from_dir(
     config: dict[str, Any] | None = None,
 ) -> ModelBundle:
     manifest = _load_model_manifest(model_dir)
-    score_min, score_max = _load_score_range(model_dir)
+    score_min, score_max, pixel_min, pixel_max = _load_score_range(model_dir)
 
     categories = manifest.get("categories")
     if categories is not None and (
@@ -135,4 +143,11 @@ def load_model_from_dir(
 
     model.to(device)
     model.eval()
-    return ModelBundle(model=model, score_min=score_min, score_max=score_max, categories=categories)
+    return ModelBundle(
+        model=model, 
+        score_min=score_min, 
+        score_max=score_max, 
+        pixel_min=pixel_min, 
+        pixel_max=pixel_max, 
+        categories=categories
+    )
