@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from torch.nn.init import trunc_normal_
 
@@ -28,6 +30,12 @@ def build_dinomaly(
     remove_class_token: bool = False,
     use_context_recentering: bool = False,
     precision: str = "float32",
+    gaussian_kernel_size: int = 33,
+    gaussian_sigma: float = 4.0,
+    anomaly_map_weights: list[float] | None = None,
+    loss: dict[str, Any] | None = None,
+    image_score_resize: int | None = 256,
+    image_score_top_ratio: float = 0.01,
     encoder_pretrained_path: str | None = None,
 ) -> DinomalyModel:
     """构建 Dinomaly 模型，并完成参数冻结/解冻及初始化。
@@ -43,6 +51,12 @@ def build_dinomaly(
         fuse_layer_decoder=fuse_layer_decoder,
         remove_class_token=remove_class_token,
         use_context_recentering=use_context_recentering,
+        gaussian_kernel_size=gaussian_kernel_size,
+        gaussian_sigma=gaussian_sigma,
+        anomaly_map_weights=anomaly_map_weights,
+        loss=loss,
+        image_score_resize=image_score_resize,
+        image_score_top_ratio=image_score_top_ratio,
         encoder_pretrained_path=encoder_pretrained_path,
     )
 

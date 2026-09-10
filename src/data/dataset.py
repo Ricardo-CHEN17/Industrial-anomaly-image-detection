@@ -6,8 +6,18 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from src.core.manifest import ManifestSample
+from src.core.preprocess import PreprocessConfig
+
+
+_CV2_INTERPOLATIONS = {
+    "linear": cv2.INTER_LINEAR,
+    "nearest": cv2.INTER_NEAREST,
+    "area": cv2.INTER_AREA,
+    "cubic": cv2.INTER_CUBIC,
+}
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -28,13 +38,17 @@ class ManifestDataset(torch.utils.data.Dataset):
         self,
         data_root: Path,
         samples: list[ManifestSample],
+        preprocess: PreprocessConfig,
         transform: Callable | None = None,
         return_original_size: bool = False,
+        return_valid_patch_mask: bool = False,
     ) -> None:
         self.data_root = data_root
         self.samples = samples
+        self.preprocess = preprocess
         self.transform = transform
         self.return_original_size = return_original_size
+        self.return_valid_patch_mask = return_valid_patch_mask
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -45,23 +59,23 @@ class ManifestDataset(torch.utils.data.Dataset):
         image = _load_image(image_path)
 
         original_size = (image.shape[0], image.shape[1])
-        h, w = original_size
-        
-        # Letterbox 几何一致性变换
-        target_size = 392
-        scale = min(target_size / h, target_size / w)
-        new_h, new_w = int(round(h * scale)), int(round(w * scale))
-        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        
-        pad_top = (target_size - new_h) // 2
-        pad_bottom = target_size - new_h - pad_top
-        pad_left = (target_size - new_w) // 2
-        pad_right = target_size - new_w - pad_left
-        
-        # 使用 ImageNet mean (约 124, 116, 104) 填充，避免黑边高频响应
+        letterbox = self.preprocess.letterbox_meta(original_size)
+        new_h, new_w = letterbox.resized_size
+        pad_top, pad_bottom, pad_left, pad_right = letterbox.padding
+        image = cv2.resize(
+            image,
+            (new_w, new_h),
+            interpolation=_CV2_INTERPOLATIONS[self.preprocess.resize_interpolation],
+        )
+
         image = cv2.copyMakeBorder(
-            image, pad_top, pad_bottom, pad_left, pad_right, 
-            cv2.BORDER_CONSTANT, value=[124, 116, 104]
+            image,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=list(self.preprocess.padding_color_rgb),
         )
 
         if self.transform is not None:
@@ -75,7 +89,19 @@ class ManifestDataset(torch.utils.data.Dataset):
             "image": image,
             "image_name": sample.image_name,
             "category": sample.category,
-            "original_size": original_size,
-            "padding": (pad_top, pad_bottom, pad_left, pad_right),
         }
+        if self.return_original_size:
+            item["original_size"] = letterbox.original_size
+            item["padding"] = letterbox.padding
+        if self.return_valid_patch_mask:
+            valid_pixels = torch.zeros(
+                (1, self.preprocess.canvas_size, self.preprocess.canvas_size),
+                dtype=torch.float32,
+            )
+            valid_pixels[:, pad_top : pad_top + new_h, pad_left : pad_left + new_w] = 1.0
+            item["valid_patch_mask"] = F.avg_pool2d(
+                valid_pixels,
+                kernel_size=self.preprocess.patch_size,
+                stride=self.preprocess.patch_size,
+            )
         return item

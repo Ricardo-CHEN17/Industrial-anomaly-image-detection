@@ -1,131 +1,119 @@
-from functools import partial
+from __future__ import annotations
+
+import math
+from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 
 class CosineHardMiningLoss(torch.nn.Module):
-    """Cosine similarity loss with hard mining for anomaly detection.
+    """Patch-wise cosine reconstruction loss with per-image hard mining.
 
-    This loss function implements a sophisticated training strategy for the Dinomaly model
-    that prevents the decoder from becoming too effective at reconstructing anomalous regions.
-    The key insight is to "loosen the point-by-point reconstruction constraint" by reducing
-    the gradient contribution of well-reconstructed (easy) feature points during training.
-
-    The algorithm works by:
-    1. Computing cosine similarity between encoder and decoder features
-    2. Identifying well-reconstructed points (those with high cosine similarity)
-    3. Reducing the gradient contribution of these easy points by factor
-    4. Focusing training on harder-to-reconstruct points
-
-    This prevents the decoder from learning to reconstruct anomalous patterns, which is
-    crucial for effective anomaly detection during inference.
-
-    Args:
-        p (float): Percentage of well-reconstructed (easy) points to down-weight.
-            Higher values (closer to 1.0) down-weight more points, making training
-            focus on fewer, harder examples. Default is 0.9 (down-weight 90% of easy points).
-        factor (float): Gradient reduction factor for well-reconstructed points.
-            Lower values reduce gradient contribution more aggressively. Default is 0.1
-            (reduce gradients to 10% of the original value).
-
-    Note:
-        Despite the name "hard mining", this loss actually down-weights easy examples
-        rather than up-weighting hard ones. The naming follows the original implementation
-        for consistency.
+    The encoder is frozen. Each spatial feature location is scored independently
+    against the decoder output. Letterbox padding can be excluded, or partly
+    weighted, through ``valid_patch_mask``.
     """
 
-    def __init__(self, p_final: float = 0.9, p_schedule_steps: int = 1000, factor: float = 0.1) -> None:
-        """Initialize the CosineHardMiningLoss.
-
-        Args:
-            p_final (float): Final percentage of well-reconstructed points to down-weight.
-                This is used to clip the p value during training. Default is 0.9.
-            p_schedule_steps (int): Number of steps over which to schedule the p value.
-                This allows gradual adjustment of the p value during training.After these many steps,
-                the p value will be set to p_final. Default is 1000.
-            factor (float): Gradient reduction factor for well-reconstructed points (0.0 to 1.0).
-                Lower values reduce gradient contribution more aggressively. Default is 0.1.
-        """
+    def __init__(
+        self,
+        p_final: float = 0.8,
+        p_schedule_steps: int = 1000,
+        easy_weight: float = 0.1,
+    ) -> None:
         super().__init__()
-
-        self.p_final = p_final
-        self.factor = factor
+        if not 0.0 <= p_final <= 1.0:
+            raise ValueError("p_final must be in [0, 1]")
+        if not isinstance(p_schedule_steps, int) or p_schedule_steps <= 0:
+            raise ValueError("p_schedule_steps must be a positive integer")
+        if not 0.0 <= easy_weight <= 1.0:
+            raise ValueError("easy_weight must be in [0, 1]")
+        self.p_final = float(p_final)
         self.p_schedule_steps = p_schedule_steps
-        self.p = 0.0  # This is updated before calculating the loss
+        self.easy_weight = float(easy_weight)
+        self.p = 0.0
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any] | None) -> "CosineHardMiningLoss":
+        config = dict(config or {})
+        loss_type = config.pop("type", "spatial_cosine_hard_mining")
+        mask_mode = config.pop("valid_mask_mode", "patch_coverage")
+        if loss_type != "spatial_cosine_hard_mining":
+            raise ValueError(f"unsupported loss type: {loss_type!r}")
+        if mask_mode != "patch_coverage":
+            raise ValueError(f"unsupported valid_mask_mode: {mask_mode!r}")
+        allowed = {"p_final", "p_schedule_steps", "easy_weight"}
+        unexpected = set(config) - allowed
+        if unexpected:
+            raise ValueError(f"unsupported loss configuration: {sorted(unexpected)}")
+        return cls(**config)
 
     def forward(
         self,
         encoder_features: list[torch.Tensor],
         decoder_features: list[torch.Tensor],
         global_step: int,
+        valid_patch_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Forward pass of the cosine hard mining loss.
+        if not encoder_features or len(encoder_features) != len(decoder_features):
+            raise ValueError("encoder_features and decoder_features must be non-empty lists of equal length")
 
-        Computes cosine similarity loss between encoder and decoder features while
-        applying gradient modification to down-weight well-reconstructed points.
-
-        Args:
-            encoder_features: List of feature tensors from encoder layers.
-                Each tensor should have a shape (batch_size, num_features, height, width).
-            decoder_features: List of corresponding feature tensors from decoder layers.
-                Must have the same length and compatible shapes as encoder_features.
-            global_step (int): Current training step, used to update the p value schedule.
-
-        Returns:
-            Computed loss value averaged across all feature layers.
-
-        Note:
-            The encoder features are detached to prevent gradient flow through the encoder,
-            focusing training only on the decoder parameters.
-        """
-        # Update the p value based on the global step
         self._update_p_schedule(global_step)
-        cos_loss = torch.nn.CosineSimilarity()
-        loss = torch.tensor(0.0, device=encoder_features[0].device)
-        for item in range(len(encoder_features)):
-            en_ = encoder_features[item].detach()
-            de_ = decoder_features[item]
-            with torch.no_grad():
-                point_dist = 1 - cos_loss(en_, de_).unsqueeze(1)
-            k = max(1, int(point_dist.numel() * (1 - self.p)))
-            thresh = torch.topk(point_dist.reshape(-1), k=k)[0][-1]
-
-            loss += torch.mean(1 - cos_loss(en_.reshape(en_.shape[0], -1), de_.reshape(de_.shape[0], -1)))
-
-            partial_func = partial(
-                self._modify_grad,
-                indices_to_modify=point_dist < thresh,
-                gradient_multiply_factor=self.factor,
+        total_loss = torch.zeros((), device=encoder_features[0].device)
+        for encoder_feature, decoder_feature in zip(encoder_features, decoder_features, strict=True):
+            if encoder_feature.shape != decoder_feature.shape or encoder_feature.ndim != 4:
+                raise ValueError(
+                    "encoder and decoder features must have identical [B, C, H, W] shapes; "
+                    f"got {tuple(encoder_feature.shape)} and {tuple(decoder_feature.shape)}"
+                )
+            coverage = self._validate_or_create_mask(valid_patch_mask, encoder_feature)
+            distances = 1.0 - F.cosine_similarity(
+                encoder_feature.detach(), decoder_feature, dim=1
             )
-            de_.register_hook(partial_func)
+            weights = self._mining_weights(distances, coverage)
+            denominator = weights.sum()
+            if denominator <= 0:
+                raise ValueError("valid_patch_mask contains no valid patch")
+            total_loss = total_loss + (distances * weights).sum() / denominator
 
-        return loss / len(encoder_features)
+        return total_loss / len(encoder_features)
 
     @staticmethod
-    def _modify_grad(
-        x: torch.Tensor,
-        indices_to_modify: torch.Tensor,
-        gradient_multiply_factor: float = 0.0,
+    def _validate_or_create_mask(
+        valid_patch_mask: torch.Tensor | None,
+        feature: torch.Tensor,
     ) -> torch.Tensor:
-        """Modify gradients based on indices and factor.
+        batch_size, _, height, width = feature.shape
+        if valid_patch_mask is None:
+            return torch.ones((batch_size, height, width), dtype=feature.dtype, device=feature.device)
+        if valid_patch_mask.shape != (batch_size, 1, height, width):
+            raise ValueError(
+                "valid_patch_mask shape must be [B, 1, H, W] matching feature patches; "
+                f"got {tuple(valid_patch_mask.shape)}, expected {(batch_size, 1, height, width)}"
+            )
+        coverage = valid_patch_mask[:, 0].to(device=feature.device, dtype=feature.dtype)
+        if not torch.isfinite(coverage).all() or (coverage < 0).any() or (coverage > 1).any():
+            raise ValueError("valid_patch_mask values must be finite and in [0, 1]")
+        return coverage
 
-        Args:
-            x: Input tensor
-            indices_to_modify: Boolean indices indicating which elements to modify
-            gradient_multiply_factor: Factor to multiply the selected gradients by
+    def _mining_weights(self, distances: torch.Tensor, coverage: torch.Tensor) -> torch.Tensor:
+        """Return coverage-aware hard-mining weights, independently per image."""
+        hard = torch.zeros_like(distances, dtype=torch.bool)
+        flat_distances = distances.reshape(distances.shape[0], -1)
+        flat_coverage = coverage.reshape(coverage.shape[0], -1)
+        flat_hard = hard.reshape(hard.shape[0], -1)
 
-        Returns:
-            Modified tensor
-        """
-        indices_to_modify = indices_to_modify.expand_as(x)
-        result = x.clone()
-        result[indices_to_modify] = result[indices_to_modify] * gradient_multiply_factor
-        return result
+        for batch_index in range(distances.shape[0]):
+            valid_indices = torch.nonzero(flat_coverage[batch_index] > 0, as_tuple=False).flatten()
+            if valid_indices.numel() == 0:
+                continue
+            keep_count = max(1, math.ceil(valid_indices.numel() * (1.0 - self.p)))
+            candidate_distances = flat_distances[batch_index, valid_indices]
+            hard_indices = valid_indices[torch.topk(candidate_distances, k=keep_count).indices]
+            flat_hard[batch_index, hard_indices] = True
+
+        mining = torch.where(hard, torch.ones_like(coverage), torch.full_like(coverage, self.easy_weight))
+        return coverage * mining
 
     def _update_p_schedule(self, global_step: int) -> None:
-        """Update the percentage of well-reconstructed points to down-weight based on the global step.
-
-        Args:
-            global_step (int): Current training step, used to update the p value schedule.
-        """
         self.p = min(self.p_final * global_step / self.p_schedule_steps, self.p_final)

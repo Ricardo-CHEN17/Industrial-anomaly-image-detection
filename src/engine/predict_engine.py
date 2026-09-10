@@ -19,11 +19,20 @@ from src.utils.normalization import normalize
 
 
 def run_inference(config: AppConfig) -> None:
+    bundle = load_model_from_dir(config.model_dir, config.device)
+    model = bundle.model
+    score_min = bundle.score_min
+    score_max = bundle.score_max
+    pixel_min = bundle.pixel_min
+    pixel_max = bundle.pixel_max
+
     samples = load_manifest(config.manifest, strict=True)
     dataset = ManifestDataset(
         data_root=config.data_root,
         samples=samples,
-        transform=get_dinomaly_transforms(),
+        preprocess=bundle.preprocess,
+        transform=get_dinomaly_transforms(bundle.preprocess),
+        return_original_size=True,
     )
     loader = torch.utils.data.DataLoader(
         dataset,
@@ -32,13 +41,6 @@ def run_inference(config: AppConfig) -> None:
         num_workers=config.num_workers,
         drop_last=False,
     )
-
-    bundle = load_model_from_dir(config.model_dir, config.device)
-    model = bundle.model
-    score_min = bundle.score_min
-    score_max = bundle.score_max
-    pixel_min = bundle.pixel_min
-    pixel_max = bundle.pixel_max
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -60,17 +62,26 @@ def run_inference(config: AppConfig) -> None:
                 if anomaly_map.ndim != 2:
                     raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
 
-                # 获取原图尺寸与 padding 参数
                 orig_h, orig_w = batch["original_size"][0].item(), batch["original_size"][1].item()
                 pad_top, pad_bottom, pad_left, pad_right = (
                     batch["padding"][0].item(), batch["padding"][1].item(), 
                     batch["padding"][2].item(), batch["padding"][3].item()
                 )
 
-                # 1. 裁剪掉 Letterbox 的 Padding 区域
-                anomaly_map = anomaly_map[pad_top : 392 - pad_bottom, pad_left : 392 - pad_right]
-                # 2. 还原回原图真实分辨率
-                anomaly_map = cv2.resize(anomaly_map, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                anomaly_map = bundle.preprocess.remove_padding(
+                    anomaly_map,
+                    (pad_top, pad_bottom, pad_left, pad_right),
+                )
+                map_interpolation = {
+                    "linear": cv2.INTER_LINEAR,
+                    "nearest": cv2.INTER_NEAREST,
+                    "cubic": cv2.INTER_CUBIC,
+                }[bundle.preprocess.map_interpolation]
+                anomaly_map = cv2.resize(
+                    anomaly_map,
+                    (orig_w, orig_h),
+                    interpolation=map_interpolation,
+                )
 
                 category_dir = config.output_dir / category
                 map_rel = Path("pred_maps") / Path(image_name).with_suffix(".npy")

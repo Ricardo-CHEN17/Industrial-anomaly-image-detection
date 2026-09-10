@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.config import ConfigError, load_config
+from src.core.preprocess import PreprocessConfig, PreprocessConfigError
 
 
 class ConfigValidationError(ConfigError):
@@ -28,6 +29,7 @@ class AppConfig:
     device: str = "cpu"
     num_workers: int = 4
     seed: int = 2026
+    preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
     model_params: dict[str, Any] = field(default_factory=dict)
     training_params: dict[str, Any] = field(default_factory=dict)
 
@@ -95,6 +97,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         if value is not None and not isinstance(value, dict):
             raise ConfigValidationError(f"{key} 必须是 JSON 对象: {value!r}")
 
+    try:
+        PreprocessConfig.from_dict(cfg.get("preprocess"))
+    except PreprocessConfigError as exc:
+        raise ConfigValidationError(f"preprocess 配置非法: {exc}") from exc
+
 
 def build_config(train_mode: bool, argv: list[str] | None = None) -> AppConfig:
     """构建并校验最终的不可变配置对象。"""
@@ -102,6 +109,10 @@ def build_config(train_mode: bool, argv: list[str] | None = None) -> AppConfig:
     cli_args = parse_cli_args(train_mode, argv)
     merged = merge_configs(defaults, cli_args)
     validate_config(merged)
+    try:
+        preprocess = PreprocessConfig.from_dict(merged["preprocess"])
+    except PreprocessConfigError as exc:
+        raise ConfigValidationError(f"preprocess 配置非法: {exc}") from exc
     return AppConfig(
         data_root=Path(merged["data_root"]),
         manifest=Path(merged["manifest"]),
@@ -110,6 +121,7 @@ def build_config(train_mode: bool, argv: list[str] | None = None) -> AppConfig:
         device=str(merged["device"]),
         num_workers=int(merged.get("num_workers", 4)),
         seed=int(merged.get("seed", 2026)),
+        preprocess=preprocess,
         model_params=merged.get("model", {}),
         training_params=merged.get("training", {}),
     )

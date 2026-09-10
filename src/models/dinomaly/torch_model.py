@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from functools import partial
 from dataclasses import dataclass
+from math import isfinite
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -207,11 +209,6 @@ def _validate_fuse_layers(
                 )
 
 
-DEFAULT_RESIZE_SIZE = 256
-DEFAULT_GAUSSIAN_KERNEL_SIZE = 33
-DEFAULT_GAUSSIAN_SIGMA = 4
-DEFAULT_MAX_RATIO = 0.01
-
 TRANSFORMER_CONFIG: dict[str, float | bool] = {
     "mlp_ratio": 4.0,
     "layer_norm_eps": 1e-8,
@@ -231,6 +228,12 @@ class DinomalyModel(nn.Module):
         fuse_layer_decoder: list[list[int]] | None = None,
         remove_class_token: bool = False,
         use_context_recentering: bool = False,
+        gaussian_kernel_size: int = 33,
+        gaussian_sigma: float = 4.0,
+        anomaly_map_weights: list[float] | None = None,
+        loss: dict[str, Any] | None = None,
+        image_score_resize: int | None = 256,
+        image_score_top_ratio: float = 0.01,
         encoder_pretrained_path: str | None = None,
     ) -> None:
         super().__init__()
@@ -240,6 +243,16 @@ class DinomalyModel(nn.Module):
                 "use_context_recentering=True requires access to the class token "
                 "and is incompatible with remove_class_token=True"
             )
+        if not isinstance(gaussian_kernel_size, int) or gaussian_kernel_size <= 0 or gaussian_kernel_size % 2 == 0:
+            raise ValueError("gaussian_kernel_size 必须是正奇数")
+        if gaussian_sigma <= 0:
+            raise ValueError("gaussian_sigma 必须大于 0")
+        if image_score_resize is not None and (
+            not isinstance(image_score_resize, int) or image_score_resize <= 0
+        ):
+            raise ValueError("image_score_resize 必须是正整数或 None")
+        if not 0 <= image_score_top_ratio <= 1:
+            raise ValueError("image_score_top_ratio 必须位于 [0, 1]")
 
         arch_config = self._get_architecture_config(encoder_name, target_layers)
         embed_dim = arch_config["embed_dim"]
@@ -266,6 +279,9 @@ class DinomalyModel(nn.Module):
                 f"fuse_layer_encoder 与 fuse_layer_decoder 的分组数必须一致: "
                 f"{len(self.fuse_layer_encoder)} vs {len(self.fuse_layer_decoder)}"
             )
+        self.anomaly_map_weights = self._validate_anomaly_map_weights(
+            anomaly_map_weights, len(self.fuse_layer_encoder)
+        )
 
         # Create encoder (our custom TimmFeatureExtractor)
         self.encoder = TimmFeatureExtractor(
@@ -316,14 +332,16 @@ class DinomalyModel(nn.Module):
 
         self.remove_class_token = remove_class_token
         self.use_context_recentering = use_context_recentering
+        self.image_score_resize = image_score_resize
+        self.image_score_top_ratio = image_score_top_ratio
 
         self.gaussian_blur = GaussianBlur2d(
-            sigma=DEFAULT_GAUSSIAN_SIGMA,
+            sigma=gaussian_sigma,
             channels=1,
-            kernel_size=DEFAULT_GAUSSIAN_KERNEL_SIZE,
+            kernel_size=gaussian_kernel_size,
         )
 
-        self.loss_fn = CosineHardMiningLoss()
+        self.loss_fn = CosineHardMiningLoss.from_config(loss)
 
     def get_encoder_decoder_outputs(self, x: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         h_patches = x.shape[2] // self.encoder.patch_size
@@ -362,7 +380,12 @@ class DinomalyModel(nn.Module):
         de = self._process_features_for_spatial_output(de, h_patches, w_patches)
         return en, de
 
-    def forward(self, batch: torch.Tensor, global_step: int | None = None) -> torch.Tensor | InferenceBatch:
+    def forward(
+        self,
+        batch: torch.Tensor,
+        global_step: int | None = None,
+        valid_patch_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor | InferenceBatch:
         dtype = next(self.encoder.parameters()).dtype
         batch = batch.type(dtype)
         en, de = self.get_encoder_decoder_outputs(batch)
@@ -371,20 +394,35 @@ class DinomalyModel(nn.Module):
         if self.training:
             if global_step is None:
                 raise ValueError("global_step must be provided during training")
-            return self.loss_fn(encoder_features=en, decoder_features=de, global_step=global_step)
+            return self.loss_fn(
+                encoder_features=en,
+                decoder_features=de,
+                global_step=global_step,
+                valid_patch_mask=valid_patch_mask,
+            )
 
-        anomaly_map, _ = self.calculate_anomaly_maps(en, de, out_size=image_size)
+        anomaly_map, _ = self.calculate_anomaly_maps(
+            en,
+            de,
+            out_size=image_size,
+            weights=self.anomaly_map_weights,
+        )
         anomaly_map = self.gaussian_blur(anomaly_map)
         anomaly_map_resized = anomaly_map.clone()
 
-        if DEFAULT_RESIZE_SIZE is not None:
-            anomaly_map = F.interpolate(anomaly_map, size=DEFAULT_RESIZE_SIZE, mode="bilinear", align_corners=False)
+        if self.image_score_resize is not None:
+            anomaly_map = F.interpolate(
+                anomaly_map,
+                size=self.image_score_resize,
+                mode="bilinear",
+                align_corners=False,
+            )
 
-        if DEFAULT_MAX_RATIO == 0:
+        if self.image_score_top_ratio == 0:
             sp_score = torch.max(anomaly_map.flatten(1), dim=1)[0]
         else:
             anomaly_map_flat = anomaly_map.flatten(1)
-            k = int(anomaly_map_flat.shape[1] * DEFAULT_MAX_RATIO)
+            k = max(1, int(anomaly_map_flat.shape[1] * self.image_score_top_ratio))
             sp_score = torch.sort(anomaly_map_flat, dim=1, descending=True)[0][:, :k].mean(dim=1)
         pred_score = sp_score
 
@@ -395,6 +433,7 @@ class DinomalyModel(nn.Module):
         source_feature_maps: list[torch.Tensor],
         target_feature_maps: list[torch.Tensor],
         out_size: int | tuple[int, int] = 392,
+        weights: list[float] | tuple[float, ...] | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         if not isinstance(out_size, tuple):
             out_size = (out_size, out_size)
@@ -407,12 +446,43 @@ class DinomalyModel(nn.Module):
             a_map = torch.unsqueeze(a_map, dim=1)
             a_map = F.interpolate(a_map, size=out_size, mode="bilinear", align_corners=True)
             anomaly_map_list.append(a_map)
-        anomaly_map = torch.cat(anomaly_map_list, dim=1).mean(dim=1, keepdim=True)
+        maps = torch.cat(anomaly_map_list, dim=1)
+        if weights is None:
+            weights = [1.0] * maps.shape[1]
+        if len(weights) != maps.shape[1]:
+            raise ValueError(
+                f"anomaly map weights count must match feature groups: {len(weights)} vs {maps.shape[1]}"
+            )
+        map_weights = torch.as_tensor(weights, dtype=maps.dtype, device=maps.device)
+        if not torch.isfinite(map_weights).all() or (map_weights < 0).any() or map_weights.sum() <= 0:
+            raise ValueError("anomaly map weights must be finite, non-negative, and sum to a positive value")
+        map_weights = map_weights / map_weights.sum()
+        anomaly_map = (maps * map_weights.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
         return anomaly_map, anomaly_map_list
 
     @staticmethod
     def _fuse_feature(feat_list: list[torch.Tensor]) -> torch.Tensor:
         return torch.stack(feat_list, dim=1).mean(dim=1)
+
+    @staticmethod
+    def _validate_anomaly_map_weights(
+        weights: list[float] | None, number_of_groups: int
+    ) -> list[float]:
+        if weights is None:
+            return [1.0 / number_of_groups] * number_of_groups
+        if len(weights) != number_of_groups:
+            raise ValueError(
+                "anomaly_map_weights count must equal the number of fused feature groups: "
+                f"{len(weights)} vs {number_of_groups}"
+            )
+        normalized = [float(weight) for weight in weights]
+        if (
+            any(not isfinite(weight) or weight < 0 for weight in normalized)
+            or sum(normalized) <= 0
+        ):
+            raise ValueError("anomaly_map_weights must be non-negative and sum to a positive value")
+        total = sum(normalized)
+        return [weight / total for weight in normalized]
 
     @staticmethod
     def _get_architecture_config(encoder_name: str, target_layers: list[int] | None) -> dict:

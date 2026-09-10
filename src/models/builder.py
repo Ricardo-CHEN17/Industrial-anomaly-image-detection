@@ -9,6 +9,7 @@ import torch
 
 from src.models.dinomaly.model import build_dinomaly
 from src.models.dinomaly.torch_model import DinomalyModel
+from src.core.preprocess import PreprocessConfig, PreprocessConfigError
 
 CHECKPOINT_FILENAME = "shared.pth"
 MINMAX_PATH = "auxiliary/thresholds/minmax.json"
@@ -24,6 +25,12 @@ _BUILD_PARAMS = (
     "remove_class_token",
     "use_context_recentering",
     "precision",
+    "gaussian_kernel_size",
+    "gaussian_sigma",
+    "anomaly_map_weights",
+    "loss",
+    "image_score_resize",
+    "image_score_top_ratio",
     "encoder_pretrained_path",
 )
 
@@ -39,6 +46,7 @@ class ModelBundle:
     score_max: float
     pixel_min: float
     pixel_max: float
+    preprocess: PreprocessConfig
     categories: list[str] | None = None
 
 
@@ -102,6 +110,14 @@ def load_model_from_dir(
     manifest = _load_model_manifest(model_dir)
     score_min, score_max, pixel_min, pixel_max = _load_score_range(model_dir)
 
+    try:
+        preprocess = PreprocessConfig.from_dict(manifest.get("preprocess"))
+    except PreprocessConfigError as exc:
+        raise ModelLoadError(
+            "模型清单缺少或包含不合法的 preprocess 配置；"
+            "旧模型必须使用显式兼容流程，不能按当前默认规则推理"
+        ) from exc
+
     categories = manifest.get("categories")
     if categories is not None and (
         not isinstance(categories, list) or not all(isinstance(c, str) for c in categories)
@@ -149,5 +165,6 @@ def load_model_from_dir(
         score_max=score_max, 
         pixel_min=pixel_min, 
         pixel_max=pixel_max, 
-        categories=categories
+        categories=categories,
+        preprocess=preprocess,
     )

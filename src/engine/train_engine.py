@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -19,7 +20,7 @@ from src.models.dinomaly.components.optimizer import StableAdamW, WarmCosineSche
 from src.models.dinomaly.model import build_dinomaly
 from src.models.dinomaly.training_config import TRAINING_CONFIG
 
-MODEL_FORMAT_VERSION = "omniad-school-model-1.0"
+MODEL_FORMAT_VERSION = "omniad-school-model-1.2"
 PRETRAINED_ENCODER_FILENAME = "dinov2_vitb14_reg4_pretrain.pth"
 
 _MODEL_PARAMS = (
@@ -32,6 +33,12 @@ _MODEL_PARAMS = (
     "remove_class_token",
     "use_context_recentering",
     "precision",
+    "gaussian_kernel_size",
+    "gaussian_sigma",
+    "anomaly_map_weights",
+    "loss",
+    "image_score_resize",
+    "image_score_top_ratio",
     "encoder_pretrained_path",
 )
 
@@ -81,6 +88,11 @@ def _coerce_training_params(
     try:
         trainer["gradient_clip_val"] = float(trainer["gradient_clip_val"])
         trainer["max_steps"] = int(trainer["max_steps"])
+        trainer["gradient_accumulation_steps"] = int(
+            trainer.get("gradient_accumulation_steps", 1)
+        )
+        if trainer["gradient_accumulation_steps"] <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive")
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"trainer 配置非法: {exc}") from exc
 
@@ -211,6 +223,9 @@ def _save_checkpoint(model: torch.nn.Module, output_dir: Path, config: AppConfig
     checkpoint = {
         "state_dict": model.state_dict(),
         "config": dict(config.model_params),
+        "preprocess": config.preprocess.to_dict(),
+        "training": dict(config.training_params),
+        "format_version": MODEL_FORMAT_VERSION,
         "seed": config.seed,
     }
     torch.save(checkpoint, output_dir / "shared.pth")
@@ -242,10 +257,38 @@ def _save_model_manifest(
         "categories": categories,
         "score_range": [score_min, score_max],
         "model": model_info,
+        "preprocess": config.preprocess.to_dict(),
     }
     manifest_path = output_dir / "model_manifest.json"
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+
+def _save_run_config(
+    output_dir: Path,
+    categories: list[str],
+    sample_count: int,
+    config: AppConfig,
+) -> None:
+    """Persist reproducibility metadata without embedding local absolute paths."""
+    digest = hashlib.sha256(config.manifest.read_bytes()).hexdigest()
+    model_info = dict(config.model_params)
+    model_info.pop("encoder_pretrained_path", None)
+    run_config = {
+        "format_version": MODEL_FORMAT_VERSION,
+        "seed": config.seed,
+        "preprocess": config.preprocess.to_dict(),
+        "model": model_info,
+        "training": dict(config.training_params),
+        "manifest": {
+            "filename": config.manifest.name,
+            "sha256": digest,
+            "sample_count": sample_count,
+        },
+        "categories": categories,
+    }
+    with (output_dir / "run_config.json").open("w", encoding="utf-8") as f:
+        json.dump(run_config, f, indent=2, ensure_ascii=False)
 
 
 def run_training(config: AppConfig) -> None:
@@ -261,8 +304,10 @@ def run_training(config: AppConfig) -> None:
         dataset = ManifestDataset(
             data_root=config.data_root,
             samples=samples,
-            transform=get_dinomaly_transforms(),
+            preprocess=config.preprocess,
+            transform=get_dinomaly_transforms(config.preprocess),
             return_original_size=False,
+            return_valid_patch_mask=True,
         )
         batch_size = int(config.training_params.get("batch_size", 8))
         dataloader = torch.utils.data.DataLoader(
@@ -290,11 +335,15 @@ def run_training(config: AppConfig) -> None:
         optimizer = optimizer_list[0]
         scheduler = scheduler_list[0]
         clip_val = float(trainer_cfg["gradient_clip_val"])
+        accumulation_steps = int(trainer_cfg["gradient_accumulation_steps"])
 
         model.train()
         current_step = 0
+        micro_step = 0
+        accumulated_loss = 0.0
+        optimizer.zero_grad(set_to_none=True)
         logger.info(
-            f"数据量 {len(samples)}，批次大小 {batch_size}，总步数 {total_steps}，"
+            f"数据量 {len(samples)}，批次大小 {batch_size}，梯度累积 {accumulation_steps}，总步数 {total_steps}，"
             f"设备 {config.device}，类别 {categories}"
         )
         while current_step < total_steps:
@@ -302,17 +351,29 @@ def run_training(config: AppConfig) -> None:
                 if current_step >= total_steps:
                     break
                 images = batch["image"].to(config.device)
-                loss = model(images, global_step=current_step)
-                optimizer.zero_grad()
-                loss.backward()
+                valid_patch_mask = batch["valid_patch_mask"].to(config.device)
+                loss = model(
+                    images,
+                    global_step=current_step,
+                    valid_patch_mask=valid_patch_mask,
+                )
+                (loss / accumulation_steps).backward()
+                micro_step += 1
+                accumulated_loss += float(loss.detach().item())
+                if micro_step < accumulation_steps:
+                    continue
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_val)
                 optimizer.step()
                 scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
                 current_step += 1
+                reported_loss = accumulated_loss / micro_step
+                micro_step = 0
+                accumulated_loss = 0.0
                 if current_step % 10 == 0 or current_step == total_steps:
                     current_lr = scheduler.get_last_lr()[0]
                     logger.info(
-                        f"step {current_step}/{total_steps} | loss {loss.item():.6f} | lr {current_lr:.6f}"
+                        f"step {current_step}/{total_steps} | loss {reported_loss:.6f} | lr {current_lr:.6f}"
                     )
 
         stats_loader = torch.utils.data.DataLoader(
@@ -335,6 +396,7 @@ def run_training(config: AppConfig) -> None:
         _copy_pretrained_encoder(config, config.output_dir)
         _save_checkpoint(model, config.output_dir, config)
         _save_model_manifest(config.output_dir, categories, score_min, score_max, config)
+        _save_run_config(config.output_dir, categories, len(samples), config)
 
         logger.info(
             f"训练完成，已保存至 {config.output_dir}（score_range: [{score_min:.6f}, {score_max:.6f}]）"

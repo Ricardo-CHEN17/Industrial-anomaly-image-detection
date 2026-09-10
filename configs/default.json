@@ -1,4 +1,18 @@
 {
+  "preprocess": {
+    "schema_version": 1,
+    "mode": "letterbox",
+    "canvas_size": 560,
+    "patch_size": 14,
+    "resize_interpolation": "linear",
+    "map_interpolation": "linear",
+    "padding_mode": "constant",
+    "padding_color_rgb": [124, 116, 104],
+    "normalization": {
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225]
+    }
+  },
   "model": {
     "encoder_name": "vit_base_patch14_reg4_dinov2",
     "bottleneck_dropout": 0.3,
@@ -9,10 +23,22 @@
     "remove_class_token": false,
     "use_context_recentering": false,
     "precision": "float32",
+    "gaussian_kernel_size": 5,
+    "gaussian_sigma": 1.2,
+    "anomaly_map_weights": [0.65, 0.35],
+    "loss": {
+      "type": "spatial_cosine_hard_mining",
+      "p_final": 0.8,
+      "p_schedule_steps": 1000,
+      "easy_weight": 0.1,
+      "valid_mask_mode": "patch_coverage"
+    },
+    "image_score_resize": 256,
+    "image_score_top_ratio": 0.01,
     "encoder_pretrained_path": "model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth"
   },
   "training": {
-    "batch_size": 8,
+    "batch_size": 2,
     "max_steps": 4000,
     "optimizer": {
       "lr": 0.002,
@@ -29,7 +55,8 @@
       "warmup_iters": 100
     },
     "trainer": {
-      "gradient_clip_val": 0.1
+      "gradient_clip_val": 0.1,
+      "gradient_accumulation_steps": 4
     }
   }
 }
