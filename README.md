@@ -1,322 +1,394 @@
 # Industrial Anomaly Image Detection
 
-A fully offline, competition-ready implementation of **Dinomaly** for industrial anomaly detection, built on a frozen **DINOv2** (`vit_base_patch14_reg4`) encoder with a learnable bottleneck and decoder. The repository is prepared for the **OmniAD School** competition (`omniad-school-1.0` spec) and requires **no network access** during training or inference.
+本项目面向 Omni-AD 工业图像异常检测任务，使用冻结的 DINOv2 `vit_base_patch14_reg4` 编码器和可训练的特征瓶颈、Transformer 解码器，从正常样本中学习可重建的视觉特征。推理时，模型通过编码特征与重建特征之间的余弦距离，同时生成图像级异常分数和像素级连续异常图。
 
-**Author:** Yijin Chen
+项目遵循 `omniad-school-1.1` 接口，采用一个共享模型覆盖 30 个类别。训练和推理阶段均从本地加载依赖、预训练权重和模型文件，不需要访问网络。
 
-## Features
+**参赛队伍：** 无言以队
 
-- **Single shared model** trained across 30 industrial categories (`model_mode: shared`).
-- **DINOv2-based** reconstruction architecture (encoder frozen, bottleneck + decoder trained only).
-- **Offline-first**: all pretrained weights are bundled locally; nothing is downloaded at runtime.
-- **Robust I/O**: images are read via `np.fromfile` + `cv2.imdecode`, so non-ASCII (e.g. Chinese) paths work correctly.
-- **16-bit anomaly maps** plus normalized per-image anomaly scores in `[0, 1]`.
-- Reproducible results via a fixed random seed (`2026`) and deterministic configuration.
+## 主要特性
 
-## Project Structure
+- **单一共享模型：** 一个模型处理训练 manifest 中出现的全部类别，`model_mode` 为 `shared`。
+- **无监督训练：** 训练数据必须来自各类别的 `train/good` 目录，模型训练过程不读取异常标签或缺陷掩膜。
+- **冻结 DINOv2 主干：** 编码器保持冻结，仅训练 bottleneck 与 decoder。
+- **保持宽高比：** 图像按比例缩放并 letterbox 填充至 `560 × 560`，推理后移除填充并将异常图恢复至原图尺寸。
+- **图像与像素分支独立处理：** 像素分支生成连续定位图；图像分支在有效图像区域内进行特征组融合、平滑及 top 1% 汇聚。
+- **难例挖掘：** 训练损失根据特征重建难度降低易重建 patch 的梯度贡献，并利用有效区域覆盖率排除纯填充 patch。
+- **离线运行：** 模型不会在训练或推理期间下载权重。
+- **中文路径兼容：** 使用 `np.fromfile` 与 `cv2.imdecode` 读取图像，可处理 Windows 下的中文路径。
+- **规范化输出：** 每张图像输出有限的 `[0,1]` 图像级分数，以及与原图尺寸一致的二维 `float32` `.npy` 异常图。
 
-```
-.
+## 项目分工
+
+### 叶浩权
+
+- 研究模型优化方案，分析预处理、特征融合、异常图生成、图像分数汇聚、难例挖掘和分数校准等环节对图像级及像素级指标的影响。
+- 将优化方案落实到模型代码与配置中，完成相关参数调整、功能改造和版本验证。
+- 编写模型测试文件与测试用例，检查数据读取、模型加载、训练、推理和预测输出是否符合接口要求。
+- 编写本地评估脚本，实现 Image F1、Image AP、Pixel F1、Pixel AP、Pixel AUROC 和统一加权平均分的计算。
+
+### 陈羿锦
+
+- 完成项目需求分析、总体技术路线制定，以及模型最初版本和整体架构的设计与实现。
+- 构建冻结 DINOv2 编码器、特征瓶颈和 Transformer 解码器组成的特征重建模型，实现图像级异常判别与像素级异常定位。
+- 设计项目代码结构，完成 manifest 解析、基础图像预处理、模型构建、配置管理、随机种子控制和公共工具模块。
+- 设计并实现训练入口、训练循环、优化器和学习率调度、模型保存，以及推理入口、离线模型加载和逐类别预测流程。
+- 完成比赛评测接口与预测结果格式适配，负责依赖、预训练权重、模型目录和提交材料的整体整合。
+- 指导模型优化方向和实验优先级，参与方案评审，并负责版本组织、任务协调、实验结果汇总、技术报告和最终交付检查。
+
+## 项目结构
+
+```text
+Industrial-anomaly-image-detection/
 ├── configs/
-│   └── default.json            # Default model & training hyper-parameters
+│   └── default.json
 ├── model/
-│   ├── shared.pth              # Trained shared checkpoint
-│   ├── model_manifest.json     # Model manifest (categories, score range, config)
+│   ├── shared.pth
+│   ├── model_manifest.json
 │   └── auxiliary/
 │       ├── pretrained/
-│       │   └── dinov2_vitb14_reg4_pretrain.pth   # Frozen encoder weights
+│       │   └── dinov2_vitb14_reg4_pretrain.pth
 │       └── thresholds/
-│           └── minmax.json     # Score normalization range [min, max]
+│           └── minmax.json
 ├── src/
-│   ├── train.py                # Competition training entry point
-│   ├── predict.py              # Competition inference entry point
-│   ├── core/                   # Config, args, manifest, seed, logging
-│   ├── data/                   # Dataset & image transforms
-│   ├── engine/                 # Training & inference engines
-│   ├── models/                 # Dinomaly model implementation
-│   └── utils/                  # Image I/O and score normalization
+│   ├── train.py
+│   ├── predict.py
+│   ├── core/
+│   ├── data/
+│   ├── engine/
+│   ├── models/
+│   └── utils/
 ├── third_party/
-│   └── LICENSES.md             # Third-party license notices
-├── pretrained_manifest.json    # Source URL + sha256 of pretrained weights
-├── submission.json             # Competition submission metadata
-└── requirements.lock           # Pinned dependency list
+│   └── LICENSES.md
+├── pretrained_manifest.json
+├── requirements.lock
+├── report.pdf
+├── submission.json
+├── LICENSE
+└── README.md
 ```
 
-## Installation
+`model/` 是可直接用于推理的模型包。重新训练时，程序会在指定的输出目录中生成新的完整模型包，不允许直接覆盖项目自带的 `model/`。
 
-### 1. Create a virtual environment (PowerShell)
+## 环境安装
+
+### 1. 创建并激活虚拟环境
+
+在 PowerShell 中执行：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 ```
 
-If PowerShell blocks the activation script, temporarily relax the execution policy first:
+如果 PowerShell 阻止激活脚本，可以执行：
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### 2. Install pinned dependencies from `requirements.lock`
+### 2. 安装依赖
 
 ```powershell
 pip install -r requirements.lock
 ```
 
-The lock file pins exact versions (e.g. `torch==2.13.0`, `torchvision==0.28.0`, `opencv-python==5.0.0.93`) so training results are reproducible.
+当前锁定的主要版本包括：
 
-> **Note:** `requirements.lock` was resolved with Python 3.14. If your Python version differs, install the packages manually and pin the same versions to match the lock file.
+| 依赖 | 版本 |
+| --- | --- |
+| Python | 3.14（生成当前 lock 文件的环境） |
+| PyTorch | 2.14.0 |
+| torchvision | 0.29.0 |
+| NumPy | 2.5.2 |
+| OpenCV | 5.0.0.93 |
+| timm | 1.0.29 |
 
-### 2b. (Optional) Install the CUDA build of PyTorch if you have an NVIDIA GPU
+使用 NVIDIA GPU 时，需要确保安装的 PyTorch 构建支持本机 CUDA。安装后可运行：
 
-The wheels in `requirements.lock` are CPU builds by default. If your machine has an NVIDIA GPU with CUDA installed, install the **matching CUDA build** of `torch`/`torchvision` from the official PyTorch index for much faster training:
-
-1. Check your installed CUDA version:
-
-   ```powershell
-   nvidia-smi
-   ```
-
-   Look at the CUDA version in the top-right corner of the `nvidia-smi` output.
-
-2. Install the corresponding wheel variant from PyTorch's official index. Replace `cu124` with your CUDA version:
-
-   ```powershell
-   pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu124
-   ```
-
-   Commonly available index suffixes: `cu118` (CUDA 11.8), `cu121` (CUDA 12.1), `cu124` (CUDA 12.4), `cu126` (CUDA 12.6), and so on. Pick the one that matches the CUDA version reported by `nvidia-smi`.
-
-3. Install the remaining pinned dependencies (pip will skip `torch`/`torchvision` since they are already satisfied by the CUDA wheels):
-
-   ```powershell
-   pip install -r requirements.lock
-   ```
-
-4. Verify that CUDA is available to PyTorch:
-
-   ```powershell
-   python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-   ```
-
-   It should print `True` together with your CUDA version. Then pass `--device cuda:0` in the training/inference commands below.
-
-### 3. Prepare the pretrained encoder weights (offline)
-
-The training entry point **requires** the DINOv2 encoder checkpoint at:
-
+```powershell
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
 ```
+
+第一项输出为 `True` 时，可在训练和推理命令中使用 `--device cuda:0`。
+
+### 3. 检查预训练权重
+
+训练所需的 DINOv2 编码器权重必须位于：
+
+```text
 model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth
 ```
 
-This file must be present **before** training. It is downloaded manually and bundled with the repository (see `pretrained_manifest.json`):
+权重信息记录在 `pretrained_manifest.json` 中：
 
-| Item | Value |
+| 项目 | 内容 |
 | --- | --- |
-| Source URL | `https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth` |
+| 来源 | `https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14_reg4_pretrain.pth` |
 | SHA256 | `73182a088cf94833c94b1666d1c99e02fe87e2007bff57b564fb6206e25dba71` |
 
-Download it on a networked machine, place it at the path above, and verify the checksum (PowerShell):
+校验命令：
 
 ```powershell
-Get-FileHash model\auxiliary\pretrained\dinov2_vitb14_reg4_pretrain.pth -Algorithm SHA256
+Get-FileHash "model\auxiliary\pretrained\dinov2_vitb14_reg4_pretrain.pth" -Algorithm SHA256
 ```
 
-The output `Hash` value must equal `73182a088cf94833c94b1666d1c99e02fe87e2007bff57b564fb6206e25dba71`.
+## Manifest 与数据路径
 
-For a fully offline environment, install dependencies without network access:
+训练和推理都通过 CSV manifest 读取数据。`image_path` 是相对于 `--data-root` 的 POSIX 相对路径，必须使用 `/`，不能使用盘符、反斜杠、`..` 或绝对路径，也不能引用 `ground_truth`。
 
-```powershell
-pip install -r requirements.lock --no-index --find-links C:\path\to\offline\wheelhouse
-```
+### 训练 manifest
 
-`submission.json` declares `"network_required": false`, so the competition environment will not have internet access — everything (dependencies and weights) must be prepared in advance.
+按官方接口，训练 manifest 使用以下列：
 
-## Data Format
+- `image_name`
+- `category`
+- `image_path`
 
-Both training and inference consume a **manifest CSV** plus an image root directory.
+`image_name` 应为 `train/good/<文件名>`，每个 `image_path` 也必须指向相应类别的 `train/good` 正常图像，否则训练会直接报错。
 
-Required columns:
-
-- `category` — the anomaly category label
-- `image_path` — path to the image, **relative to `--data-root`**
-
-For inference (`strict=True`), the manifest must also contain a unique sample
-identifier used for output file names, under either column name:
-
-- `image_name` — unique sample identifier
-- `sample_id` — accepted alias for `image_name`
-
-Example `manifest.csv`:
+示例：
 
 ```csv
-sample_id,category,image_path
-0001,battery_piece,normal/battery_piece/0001.png
-0002,battery_piece,normal/battery_piece/0002.png
+image_name,category,image_path
+train/good/000.png,air_conditioner_filter,air_conditioner_filter/train/good/000.png
 ```
 
-Example directory layout:
+### 推理 manifest
 
+推理必须包含：
+
+- `image_name`
+- `category`
+- `image_path`
+
+`image_name` 必须采用 `test/<filename>` 的形式，并作为对应类别 `pred.json` 中的键。示例：
+
+```csv
+image_name,category,image_path
+test/000.png,air_conditioner_filter,air_conditioner_filter/test/000.png
 ```
-<data-root>/
-└── normal/
-    └── battery_piece/
-        └── 0001.png
+
+### `--data-root` 的确定方法
+
+程序实际读取的文件路径为：
+
+```text
+<data-root>/<image_path>
 ```
 
-## Training
+例如，当 `--data-root` 为 `judge_input`、`image_path` 为 `air_conditioner_filter/train/good/000.png` 时，程序读取 `judge_input/air_conditioner_filter/train/good/000.png`。README、配置和源码均不固定数据集的实际位置，正式路径由组委会通过命令行传入。
 
-### Command (PowerShell)
+## 训练
+
+### 官方训练接口
 
 ```powershell
-python src/train.py `
-  --data-root C:\path\to\data_root `
-  --manifest C:\path\to\manifest.csv `
-  --output-dir C:\path\to\output_dir `
-  --device cuda:0 `
-  --num-workers 4 `
-  --seed 2026
+python -u src/train.py --data-root judge_input --manifest train_manifest.csv --output-dir runs/retrained_model --device cuda:0 --seed 2026 --num-workers 4
 ```
 
-| Argument | Description |
+训练输出目录必须为空，且不能直接指定项目内置的 `model/`。如果目标目录已经包含文件，请改用一个新的目录名。
+
+### 参数说明
+
+| 参数 | 是否必填 | 说明 |
+| --- | --- | --- |
+| `--data-root` | 是 | 与 manifest 中 `image_path` 拼接的数据根目录 |
+| `--manifest` | 是 | 训练 manifest 文件 |
+| `--output-dir` | 是 | 新模型包的保存目录，必须为空 |
+| `--device` | 是 | `cpu`、`mps`、`mps:N` 或 `cuda:N` |
+| `--num-workers` | 否 | DataLoader 工作进程数，默认值为 4 |
+| `--seed` | 是 | 随机种子，当前实验使用 2026 |
+
+### 当前默认训练配置
+
+| 配置 | 当前值 |
 | --- | --- |
-| `--data-root` | Root directory of the images (required) |
-| `--manifest` | Training manifest CSV with `category` + `image_path` columns (required) |
-| `--output-dir` | Directory where the trained model is saved (required) |
-| `--device` | `cpu`, `mps`, or `cuda:N` (required) |
-| `--num-workers` | Number of DataLoader worker processes (required) |
-| `--seed` | Random seed for reproducibility (required) |
+| 输入尺寸 | 保持宽高比并填充至 `560 × 560` |
+| 填充值 | RGB `(124, 116, 104)` |
+| 编码器 | `vit_base_patch14_reg4_dinov2`，冻结 |
+| 编码器特征层 | 默认 `blocks.2` 至 `blocks.9` |
+| bottleneck dropout | 0.3 |
+| decoder depth | 6 |
+| batch size | 2 |
+| 梯度累积 | 4 |
+| 最大优化步数 | 4000 |
+| 优化器 | StableAdamW，初始学习率 0.002 |
+| 学习率调度 | 100 步 warmup，余弦退火至 0.0002 |
+| 像素图融合权重 | 0.65 / 0.35 |
+| 像素图高斯平滑 | kernel 5，sigma 1.2 |
+| 图像分数融合权重 | 0.5 / 0.5 |
+| 图像分数汇聚 | 有效区域缩放至 `256 × 256`，平滑后取 top 1% 均值 |
 
-> All arguments are required by the CLI parser, so always pass them explicitly.
+需要修改训练参数时，请编辑 `configs/default.json`。
 
-### Output
+### 训练输出
 
-Training writes a complete model bundle to `--output-dir`:
-
-```
-output_dir/
-├── shared.pth                       # Trained checkpoint
-├── model_manifest.json              # Model manifest (categories, score range, config)
+```text
+<output-dir>/
+├── shared.pth
+├── model_manifest.json
+├── run_config.json
 └── auxiliary/
     ├── pretrained/
     │   └── dinov2_vitb14_reg4_pretrain.pth
     └── thresholds/
-        └── minmax.json              # Score range used for normalization
+        └── minmax.json
 ```
 
-### Configuration
+- `shared.pth`：模型参数、模型配置和随机种子。
+- `model_manifest.json`：类别、模型结构、预处理和图像评分配置。
+- `run_config.json`：本次训练参数、样本统计和训练 manifest 摘要。
+- `minmax.json`：图像级分数与像素异常图的归一化参数。
 
-Hyper-parameters are read from `configs/default.json`:
+## 推理
 
-- **Model**: DINOv2 base encoder, `decoder_depth=6`, `bottleneck_dropout=0.3`
-- **Training**: `batch_size=8`, `max_steps=4000`, AdamW (`lr=2e-3`), warmup + cosine decay
-- **Data**: images resized to `448×448`, center-cropped to `392×392`, ImageNet normalization
+### 使用提交模型进行预测
 
-Adjust `batch_size` and `max_steps` in this file if you hit GPU memory limits or need shorter training.
-
-## Inference
-
-### Command (PowerShell)
+在项目根目录执行：
 
 ```powershell
-python src/predict.py `
-  --data-root C:\path\to\data_root `
-  --manifest C:\path\to\test_manifest.csv `
-  --output-dir C:\path\to\predictions `
-  --device cuda:0 `
-  --num-workers 4 `
-  --model-dir C:\path\to\model_dir
+python -u src/predict.py --data-root judge_input --manifest eval_manifest.csv --model-dir model --output-dir runs/predictions --device cuda:0 --num-workers 4
 ```
 
-| Argument | Description |
-| --- | --- |
-| `--data-root` | Root directory of the images (required) |
-| `--manifest` | Test manifest CSV with `sample_id` + `category` + `image_path` columns (required) |
-| `--output-dir` | Directory where predictions are written (required) |
-| `--device` | `cpu`, `mps`, or `cuda:N` (required) |
-| `--num-workers` | Number of DataLoader worker processes (required) |
-| `--model-dir` | Directory containing the trained model bundle (`model_manifest.json` + `shared.pth` + `auxiliary/...`) (required) |
+`--output-dir` 必须是不存在或内容为空的目录。这项限制用于防止旧预测文件混入新结果。如果需要再次预测，请更换目录名，例如 `output_v2`。
 
-The bundled `model/` directory is a ready-to-use model directory for this argument.
+### 使用重新训练的模型进行预测
 
-### Output
+将 `--model-dir` 改为训练生成的模型目录即可：
 
-```
-predictions/
-├── maps/
-│   └── <sample_id>.png          # 16-bit anomaly maps (resized to original size)
-└── predictions.csv              # sample_id, image_score
+```powershell
+python -u src/predict.py --data-root judge_input --manifest eval_manifest.csv --model-dir runs/retrained_model --output-dir runs/retrained_predictions --device cuda:0 --num-workers 4
 ```
 
-- `image_score` is normalized to `[0, 1]` using the `min`/`max` stored in `minmax.json`. Higher score = more anomalous.
-- Anomaly maps are 16-bit PNGs with values in `[0, 65535]`.
+### 参数说明
 
-## Offline Running
+| 参数 | 是否必填 | 说明 |
+| --- | --- | --- |
+| `--data-root` | 是 | 与 manifest 中 `image_path` 拼接的数据根目录 |
+| `--manifest` | 是 | 包含 `image_name`、`category` 和 `image_path` 的评测 manifest |
+| `--model-dir` | 是 | 完整模型包目录 |
+| `--output-dir` | 是 | 预测输出目录，必须为空 |
+| `--device` | 是 | `cpu`、`mps`、`mps:N` 或 `cuda:N` |
+| `--num-workers` | 否 | DataLoader 工作进程数，默认值为 4 |
 
-The pipeline is fully offline. To guarantee zero network access:
+### 预测输出
 
-1. **Dependencies**: bundle a local wheelhouse and install with `pip install -r requirements.lock --no-index --find-links <wheelhouse>`.
-2. **Pretrained weights**: ensure `model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth` is already in place before training.
-3. **Disable any network calls**: set environment variables such as `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` as a safety net (no Hugging Face models are used by default).
-4. **No download at runtime**: the code never queries the network; `submission.json` sets `"network_required": false`.
+```text
+<output-dir>/
+└── <category>/
+    ├── pred.json
+    └── pred_maps/
+        └── test/
+            └── <filename>.npy
+```
 
-## Reproducibility
+每个类别的 `pred.json` 以 manifest 中原始的 `image_name` 为键：
 
-- Fixed seed `2026` (set via `src/core/seed.py` and stored in `submission.json`).
-- All dependencies pinned in `requirements.lock`.
-- Score range is computed on the training set and saved to `minmax.json`, then reused at inference for consistent normalization.
+```json
+{
+  "test/example.png": {
+    "anomaly_score": 0.73,
+    "anomaly_map": "pred_maps/test/example.npy"
+  }
+}
+```
 
-## FAQ
+输出要求：
 
-### 1. Out of GPU memory (CUDA OOM)
+- `anomaly_score` 必须是 `[0,1]` 范围内的有限浮点数，数值越大表示越可能异常。
+- `anomaly_map` 指向相对于该类别目录的 `.npy` 文件。
+- `.npy` 内容必须是二维 `float32` 数组，尺寸与原图一致，所有数值有限且位于 `[0,1]`。
+- 输出样本数必须与评测 manifest 完全一致。
 
-- Reduce `batch_size` in `configs/default.json` (e.g. from `8` to `4` or `2`).
-- Reduce `--num-workers` (e.g. to `2` or `0`).
-- Lower `max_steps` if the training loop does not fit your time budget.
-- If you still run out of memory, switch to `--device cpu` (slower but works) or `--device mps` on Apple Silicon.
+## 当前实验结果
 
-### 2. Chinese (non-ASCII) paths fail to load images
+以下结果均为 30 个类别的宏平均，分数采用 `[0,1]` 单位：
 
-- All image loading uses `np.fromfile` + `cv2.imdecode`, which handle non-ASCII paths on Windows.
-- Do **not** use `cv2.imread` directly — it fails on Chinese paths.
-- If you see `图像读取失败` (image read failed), double-check that `--data-root`/`image_path` contain no typos and that the file exists.
+| 指标 | 当前结果 |
+| --- | ---: |
+| Image AUROC | 0.8896 |
+| Image AP | 0.9331 |
+| Image F1-max | 0.9130 |
+| Pixel AUROC | 0.9685 |
+| Pixel AP | 0.3791 |
+| Pixel F1-max | 0.4281 |
+| 统一加权平均分 | **0.6724（67.2%）** |
 
-### 3. `manifest 缺少必需列` (manifest is missing required columns)
+本地版本比较使用以下统一口径：
 
-- Training requires `category` and `image_path`.
-- Inference additionally requires `sample_id`. Add it to your test manifest.
+```text
+0.25 × Pixel F1
++ 0.25 × Pixel AP
++ 0.15 × Image F1
++ 0.15 × Image AP
++ 0.20 × Pixel AUROC
+```
 
-### 4. `预训练编码器权重不存在` (pretrained encoder weights not found)
+正式比赛分还会受组委会 `metric_best` 归一化规则影响，本表用于本地版本比较。
 
-- Training requires `model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth`.
-- Re-download it per `pretrained_manifest.json` and verify the SHA256 checksum.
-- If you set `encoder_pretrained_path` in `configs/default.json`, make sure that path exists.
+## 离线运行与复现
 
-### 5. `device 非法` (invalid device)
+- `submission.json` 中的 `network_required` 为 `false`。
+- 编码器权重从模型目录本地加载，运行时不会调用在线模型仓库。
+- 依赖版本固定在 `requirements.lock`。
+- 默认实验随机种子为 2026，并写入训练输出；不同 GPU、驱动或底层算子仍可能造成细微数值差异。
+- 如需在无网络环境安装依赖，应提前准备 wheelhouse，然后执行：
 
-- Allowed values: `cpu`, `mps`, `cuda:N` (e.g. `cuda:0`). Pass one of these explicitly.
+```powershell
+pip install -r requirements.lock --no-index --find-links wheelhouse
+```
 
-### 6. Dependency installation is slow or blocked
+## 常见问题
 
-- Use a mirror or local wheelhouse:
-  ```powershell
-  pip install -r requirements.lock --no-index --find-links C:\path\to\offline\wheelhouse
-  ```
-- The lock file pins exact versions; installing them from a pre-downloaded wheelhouse is fully offline.
+### 1. `评测 manifest 缺少必需列: image_name`
 
-### 7. `torch`/`torchvision` version mismatch
+预测必须使用含 `image_name` 的评测 manifest，并确认表头包含：
 
-- `requirements.lock` pins `torch==2.13.0` and `torchvision==0.28.0`. They must be installed together from the same index. If the lock was resolved on Python 3.14, match that Python version or reinstall the same wheel versions on your interpreter.
-- If you installed the CUDA build (see step 2b in Installation), make sure you did **not** accidentally reinstall the CPU wheels afterwards. Check with `python -c "import torch; print(torch.cuda.is_available())"` — it should print `True`.
+```csv
+image_name,category,image_path
+```
 
-### 8. `predictions.csv` sample count mismatch
+训练 manifest 不能直接代替评测 manifest；评测清单中的 `image_name` 必须采用 `test/<文件名>` 格式。
 
-- Inference raises an error if the number of predictions differs from the manifest. Ensure the manifest does not contain duplicate `sample_id` values and every row is valid.
+### 2. 图像路径不存在或读取失败
 
-## License
+检查相对路径 `<data-root>/<image_path>` 是否存在，并确认 CSV 内使用 `/` 作为路径分隔符。数据移动后只需调整命令行中的 `--data-root`，不应修改源码或配置来硬编码新位置。
 
-This project is for academic/competition use. It references third-party code from [anomalib](https://github.com/open-edge-platform/anomalib) and [DINOv2](https://github.com/facebookresearch/dinov2) (both Apache License 2.0). See [third_party/LICENSES.md](third_party/LICENSES.md) for full attribution.
+### 3. `预测输出目录非空`
 
----
+推理不会向非空目录写入结果。请指定一个新的输出目录，防止不同模型或不同轮次的预测文件混合。
 
-**Author:** Yijin Chen
+### 4. 预训练编码器权重不存在
+
+确认以下文件存在，并核对 `pretrained_manifest.json` 中的 SHA256：
+
+```text
+model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth
+```
+
+### 5. CUDA 显存不足
+
+- 在 `configs/default.json` 中继续减小 `training.batch_size`。
+- 适当降低 `--num-workers` 只能减少数据加载进程，不会直接降低模型显存占用。
+- 必要时使用 `--device cpu`，但训练和推理速度会显著下降。
+
+### 6. 模型包不完整或配置不兼容
+
+`--model-dir` 必须同时包含 `shared.pth`、`model_manifest.json`、预训练编码器权重和 `minmax.json`。旧模型若缺少当前预处理或图像评分配置，应使用当前代码重新训练生成完整模型包。
+
+## 提交前检查
+
+- 压缩包根目录应直接包含 `submission.json`、`README.md`、`requirements.lock`、`report.pdf`、`src/`、`configs/` 和 `model/`，不能再套一层同名目录。
+- `model/` 必须包含断网推理需要的全部权重、配置和辅助文件；`pretrained_manifest.json` 不能代替实际权重文件。
+- 不要把数据集、`ground_truth`、私有标签、已有预测结果、`.venv`、`__pycache__`、`.git` 或 IDE 缓存打入提交包。
+- README、技术报告、源码和配置中不得出现本机盘符、用户目录、硬编码数据位置或院校名称与标识。
+- `requirements.lock` 只能记录精确依赖版本，训练和推理代码不得动态执行安装命令。
+- 应分别使用提交包内的 `model/` 和 `train.py` 新生成的模型目录完成一次 `predict.py` 验证。
+- 每个类别的 `pred.json` 键、异常图文件和 manifest 样本必须一一对应，不得缺失、重复或新增样本。
+- 需要在组委会环境中确认端到端单张推理时间不超过 100 ms，且推理峰值显存不超过 24 GB。
+- Docker 镜像应按组委会后续发布的环境规范单独构建并验证。
+
+## 许可与第三方代码
+
+本项目用于学术研究与竞赛。项目引用 anomalib 和 DINOv2 的相关实现，两者均采用 Apache License 2.0。完整说明见 [third_party/LICENSES.md](third_party/LICENSES.md)。

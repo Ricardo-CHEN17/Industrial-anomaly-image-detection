@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import numpy as np
 import torch
 
@@ -51,3 +52,20 @@ def _invalid_range_result(score: float | int | np.ndarray | torch.Tensor) -> flo
     if isinstance(score, np.ndarray):
         return np.full_like(score, 0.5, dtype=np.float32)
     return 0.5
+
+
+def normalize_image_score(score: float, min_val: float, max_val: float) -> float:
+    """Map every finite raw score into (0, 1) without destroying its rank.
+
+    Linear clipping creates many identical scores above the maximum normal
+    training score. Image AUROC/AP/F1-max are ranking based, so retaining that
+    order is safer. The calibrated range controls the scale, not a hard cap.
+    """
+    values = (float(score), float(min_val), float(max_val))
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("image score and calibration range must be finite")
+    if max_val <= min_val:
+        raise ValueError("image score calibration range must have positive width")
+    midpoint = (min_val + max_val) / 2.0
+    scaled = (score - midpoint) / (max_val - min_val)
+    return 0.5 + math.atan(scaled) / math.pi

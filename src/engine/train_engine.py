@@ -12,15 +12,16 @@ import torch
 from src.core.args import AppConfig
 from src.core.config import ConfigError
 from src.core.logging import setup_logging
-from src.core.manifest import load_manifest
+from src.core.manifest import load_manifest, require_normal_training_samples
 from src.core.seed import set_seed
 from src.data.dataset import ManifestDataset
 from src.data.transforms import get_dinomaly_transforms
 from src.models.dinomaly.components.optimizer import StableAdamW, WarmCosineScheduler
 from src.models.dinomaly.model import build_dinomaly
 from src.models.dinomaly.training_config import TRAINING_CONFIG
+from src.utils.image_scoring import batch_padding
 
-MODEL_FORMAT_VERSION = "omniad-school-model-1.2"
+MODEL_FORMAT_VERSION = "omniad-school-model-1.3-image-valid"
 PRETRAINED_ENCODER_FILENAME = "dinov2_vitb14_reg4_pretrain.pth"
 
 _MODEL_PARAMS = (
@@ -39,6 +40,7 @@ _MODEL_PARAMS = (
     "loss",
     "image_score_resize",
     "image_score_top_ratio",
+    "image_scoring",
     "encoder_pretrained_path",
 )
 
@@ -198,24 +200,23 @@ def _compute_score_stats(
     device: str,
 ) -> tuple[float, float, float, float]:
     model.eval()
-    image_scores: list[torch.Tensor] = []
-    pixel_scores: list[torch.Tensor] = []
+    score_min, pixel_min = float("inf"), float("inf")
+    score_max, pixel_max = float("-inf"), float("-inf")
+    count = 0
     with torch.inference_mode():
         for batch in dataloader:
             images = batch["image"].to(device)
-            output = model(images)
-            image_scores.append(output.pred_score.detach().cpu())
-            pixel_scores.append(output.anomaly_map.detach().cpu())
-    if not image_scores:
+            output = model(images, padding=batch_padding(batch["padding"]))
+            if not torch.isfinite(output.pred_score).all() or not torch.isfinite(output.anomaly_map).all():
+                raise RuntimeError("calibration produced non-finite scores")
+            score_min = min(score_min, float(output.pred_score.min().item()))
+            score_max = max(score_max, float(output.pred_score.max().item()))
+            pixel_min = min(pixel_min, float(output.anomaly_map.min().item()))
+            pixel_max = max(pixel_max, float(output.anomaly_map.max().item()))
+            count += images.shape[0]
+    if not count:
         raise RuntimeError("无法计算分数统计：dataloader 为空")
-    all_image_scores = torch.cat(image_scores)
-    all_pixel_scores = torch.cat(pixel_scores)
-    return (
-        float(all_image_scores.min().item()),
-        float(all_image_scores.max().item()),
-        float(all_pixel_scores.min().item()),
-        float(all_pixel_scores.max().item()),
-    )
+    return score_min, score_max, pixel_min, pixel_max
 
 
 def _save_checkpoint(model: torch.nn.Module, output_dir: Path, config: AppConfig) -> None:
@@ -296,9 +297,14 @@ def run_training(config: AppConfig) -> None:
     logger = setup_logging("INFO")
     logger.info("开始训练 Dinomaly 模型")
     try:
+        if config.output_dir.resolve() == (Path(__file__).resolve().parents[2] / "model").resolve():
+            raise ValueError("训练不得覆盖提交包内 model/，请指定新的 output-dir")
+        if config.output_dir.exists() and any(config.output_dir.iterdir()):
+            raise ValueError("训练输出目录必须为空")
         samples = load_manifest(config.manifest, strict=False)
         if not samples:
             raise RuntimeError("训练 manifest 为空")
+        require_normal_training_samples(samples)
         categories = sorted({sample.category for sample in samples})
 
         dataset = ManifestDataset(
@@ -306,10 +312,10 @@ def run_training(config: AppConfig) -> None:
             samples=samples,
             preprocess=config.preprocess,
             transform=get_dinomaly_transforms(config.preprocess),
-            return_original_size=False,
+            return_original_size=True,
             return_valid_patch_mask=True,
         )
-        batch_size = int(config.training_params.get("batch_size", 8))
+        batch_size = min(int(config.training_params.get("batch_size", 8)), len(samples))
         dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
@@ -384,13 +390,18 @@ def run_training(config: AppConfig) -> None:
             drop_last=False,
         )
         score_min, score_max, pixel_min, pixel_max = _compute_score_stats(model, stats_loader, config.device)
+        if score_max == score_min:
+            score_max = score_min + max(abs(score_min) * 1e-6, 1e-8)
+        if pixel_max == pixel_min:
+            pixel_max = pixel_min + max(abs(pixel_min) * 1e-6, 1e-8)
         thresholds_dir = config.output_dir / "auxiliary" / "thresholds"
         thresholds_dir.mkdir(parents=True, exist_ok=True)
         minmax_path = thresholds_dir / "minmax.json"
         with minmax_path.open("w", encoding="utf-8") as f:
             json.dump({
                 "min": score_min, "max": score_max,
-                "pixel_min": pixel_min, "pixel_max": pixel_max
+                "pixel_min": pixel_min, "pixel_max": pixel_max,
+                "image_scoring": config.model_params.get("image_scoring")
             }, f, indent=2)
 
         _copy_pretrained_encoder(config, config.output_dir)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -15,10 +16,16 @@ from src.data.dataset import ManifestDataset
 from src.data.transforms import get_dinomaly_transforms
 from src.models.builder import load_model_from_dir
 from src.utils.image_io import save_float32_npy
-from src.utils.normalization import normalize
+from src.utils.normalization import normalize, normalize_image_score
+from src.utils.image_scoring import batch_padding
 
 
 def run_inference(config: AppConfig) -> None:
+    if config.output_dir.exists() and any(config.output_dir.iterdir()):
+        raise ValueError("预测输出目录非空，请使用新目录，避免混入旧预测")
+    samples = load_manifest(config.manifest, strict=True)
+    if not samples:
+        raise ValueError("预测 manifest 为空")
     bundle = load_model_from_dir(config.model_dir, config.device)
     model = bundle.model
     score_min = bundle.score_min
@@ -26,7 +33,6 @@ def run_inference(config: AppConfig) -> None:
     pixel_min = bundle.pixel_min
     pixel_max = bundle.pixel_max
 
-    samples = load_manifest(config.manifest, strict=True)
     dataset = ManifestDataset(
         data_root=config.data_root,
         samples=samples,
@@ -53,11 +59,18 @@ def run_inference(config: AppConfig) -> None:
                 category = batch["category"][0]
                 image = batch["image"].to(config.device)
 
-                output = model(image)
+                output = model(image, padding=batch_padding(batch["padding"]))
                 score = float(output.pred_score.detach().cpu().item())
-                score = normalize(score, min_val=score_min, max_val=score_max)
+                if not math.isfinite(score):
+                    raise RuntimeError("image score 包含 NaN/Inf")
+                if getattr(model, "image_scoring", None) is None:
+                    score = normalize(score, min_val=score_min, max_val=score_max)
+                else:
+                    score = normalize_image_score(score, min_val=score_min, max_val=score_max)
 
                 anomaly_map_np = np.squeeze(output.anomaly_map.detach().cpu().numpy())
+                if not np.isfinite(anomaly_map_np).all():
+                    raise RuntimeError("pixel map 包含 NaN/Inf")
                 anomaly_map = normalize(anomaly_map_np, min_val=pixel_min, max_val=pixel_max)
                 if anomaly_map.ndim != 2:
                     raise RuntimeError(f"anomaly_map 形状非法: {anomaly_map.shape}")
@@ -82,6 +95,9 @@ def run_inference(config: AppConfig) -> None:
                     (orig_w, orig_h),
                     interpolation=map_interpolation,
                 )
+                anomaly_map = np.clip(anomaly_map, 0.0, 1.0).astype(np.float32)
+                if not np.isfinite(anomaly_map).all():
+                    raise RuntimeError("最终 pixel map 包含 NaN/Inf")
 
                 category_dir = config.output_dir / category
                 map_rel = Path("pred_maps") / Path(image_name).with_suffix(".npy")
@@ -102,7 +118,7 @@ def run_inference(config: AppConfig) -> None:
         category_dir.mkdir(parents=True, exist_ok=True)
         pred_path = category_dir / "pred.json"
         with pred_path.open("w", encoding="utf-8") as f:
-            json.dump(pred, f, indent=2, ensure_ascii=False)
+            json.dump(pred, f, indent=2, ensure_ascii=False, allow_nan=False)
 
     if sum(len(pred) for pred in preds.values()) != len(samples):
         raise RuntimeError(

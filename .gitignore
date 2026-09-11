@@ -49,6 +49,10 @@ model/shared.pth
 # ========== 日志 / 输出 ==========
 logs/
 *.log
+runs/
+predictions/
+data/
+ground_truth/
 
 # ========== 环境变量 / 密钥 ==========
 .env

@@ -36,6 +36,7 @@ def build_dinomaly(
     loss: dict[str, Any] | None = None,
     image_score_resize: int | None = 256,
     image_score_top_ratio: float = 0.01,
+    image_scoring: dict[str, Any] | None = None,
     encoder_pretrained_path: str | None = None,
 ) -> DinomalyModel:
     """构建 Dinomaly 模型，并完成参数冻结/解冻及初始化。
@@ -57,6 +58,7 @@ def build_dinomaly(
         loss=loss,
         image_score_resize=image_score_resize,
         image_score_top_ratio=image_score_top_ratio,
+        image_scoring=image_scoring,
         encoder_pretrained_path=encoder_pretrained_path,
     )
 

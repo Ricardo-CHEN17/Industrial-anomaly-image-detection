@@ -35,6 +35,14 @@
     },
     "image_score_resize": 256,
     "image_score_top_ratio": 0.01,
+    "image_scoring": {
+      "region": "valid",
+      "weights": [0.5, 0.5],
+      "resize": 256,
+      "top_ratio": 0.01,
+      "gaussian_kernel_size": 5,
+      "gaussian_sigma": 4.0
+    },
     "encoder_pretrained_path": "model/auxiliary/pretrained/dinov2_vitb14_reg4_pretrain.pth"
   },
   "training": {

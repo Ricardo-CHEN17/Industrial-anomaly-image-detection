@@ -56,6 +56,8 @@ class ManifestDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         sample = self.samples[idx]
         image_path = self.data_root / sample.image_path
+        if not image_path.resolve().is_relative_to(self.data_root.resolve()):
+            raise RuntimeError("图像路径越出 data_root")
         image = _load_image(image_path)
 
         original_size = (image.shape[0], image.shape[1])

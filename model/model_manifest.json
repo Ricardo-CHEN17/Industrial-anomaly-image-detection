@@ -1,5 +1,5 @@
 {
-  "format_version": "omniad-school-model-1.0",
+  "format_version": "omniad-school-model-1.3-image-valid",
   "model_mode": "shared",
   "checkpoint": "shared.pth",
   "categories": [
@@ -35,8 +35,8 @@
     "work_piece7"
   ],
   "score_range": [
-    0.05738672614097595,
-    0.15650689601898193
+    0.048535674810409546,
+    0.1408136785030365
   ],
   "model": {
     "encoder_name": "vit_base_patch14_reg4_dinov2",
@@ -47,6 +47,58 @@
     "fuse_layer_decoder": null,
     "remove_class_token": false,
     "use_context_recentering": false,
-    "precision": "float32"
+    "precision": "float32",
+    "gaussian_kernel_size": 5,
+    "gaussian_sigma": 1.2,
+    "anomaly_map_weights": [
+      0.65,
+      0.35
+    ],
+    "loss": {
+      "type": "spatial_cosine_hard_mining",
+      "p_final": 0.8,
+      "p_schedule_steps": 1000,
+      "easy_weight": 0.1,
+      "valid_mask_mode": "patch_coverage"
+    },
+    "image_score_resize": 256,
+    "image_score_top_ratio": 0.01,
+    "image_scoring": {
+      "region": "valid",
+      "weights": [
+        0.5,
+        0.5
+      ],
+      "resize": 256,
+      "top_ratio": 0.01,
+      "gaussian_kernel_size": 5,
+      "gaussian_sigma": 4.0
+    }
+  },
+  "preprocess": {
+    "schema_version": 1,
+    "mode": "letterbox",
+    "canvas_size": 560,
+    "patch_size": 14,
+    "resize_interpolation": "linear",
+    "map_interpolation": "linear",
+    "padding_mode": "constant",
+    "padding_color_rgb": [
+      124,
+      116,
+      104
+    ],
+    "normalization": {
+      "mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    }
   }
 }

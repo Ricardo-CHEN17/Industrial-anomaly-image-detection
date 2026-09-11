@@ -1,4 +1,17 @@
 {
-  "min": 0.05738672614097595,
-  "max": 0.15650689601898193
+  "min": 0.048535674810409546,
+  "max": 0.1408136785030365,
+  "pixel_min": 0.0036378398071974516,
+  "pixel_max": 0.5842146873474121,
+  "image_scoring": {
+    "region": "valid",
+    "weights": [
+      0.5,
+      0.5
+    ],
+    "resize": 256,
+    "top_ratio": 0.01,
+    "gaussian_kernel_size": 5,
+    "gaussian_sigma": 4.0
+  }
 }

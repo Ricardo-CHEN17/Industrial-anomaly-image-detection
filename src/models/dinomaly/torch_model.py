@@ -13,6 +13,7 @@ from timm.layers.drop import DropPath
 
 from .components.layers import DinomalyMLP, LinearAttention
 from .components.loss import CosineHardMiningLoss
+from src.utils.image_scoring import ImageScoring, image_scores
 
 
 # -----------------------------------------------------------------------------
@@ -234,6 +235,7 @@ class DinomalyModel(nn.Module):
         loss: dict[str, Any] | None = None,
         image_score_resize: int | None = 256,
         image_score_top_ratio: float = 0.01,
+        image_scoring: dict[str, Any] | None = None,
         encoder_pretrained_path: str | None = None,
     ) -> None:
         super().__init__()
@@ -334,6 +336,7 @@ class DinomalyModel(nn.Module):
         self.use_context_recentering = use_context_recentering
         self.image_score_resize = image_score_resize
         self.image_score_top_ratio = image_score_top_ratio
+        self.image_scoring = ImageScoring.from_dict(image_scoring) if image_scoring is not None else None
 
         self.gaussian_blur = GaussianBlur2d(
             sigma=gaussian_sigma,
@@ -385,6 +388,7 @@ class DinomalyModel(nn.Module):
         batch: torch.Tensor,
         global_step: int | None = None,
         valid_patch_mask: torch.Tensor | None = None,
+        padding: list[tuple[int, int, int, int]] | None = None,
     ) -> torch.Tensor | InferenceBatch:
         dtype = next(self.encoder.parameters()).dtype
         batch = batch.type(dtype)
@@ -401,7 +405,7 @@ class DinomalyModel(nn.Module):
                 valid_patch_mask=valid_patch_mask,
             )
 
-        anomaly_map, _ = self.calculate_anomaly_maps(
+        anomaly_map, group_maps = self.calculate_anomaly_maps(
             en,
             de,
             out_size=image_size,
@@ -409,6 +413,12 @@ class DinomalyModel(nn.Module):
         )
         anomaly_map = self.gaussian_blur(anomaly_map)
         anomaly_map_resized = anomaly_map.clone()
+
+        if self.image_scoring is not None:
+            return InferenceBatch(
+                pred_score=image_scores(group_maps, padding, self.image_scoring),
+                anomaly_map=anomaly_map_resized,
+            )
 
         if self.image_score_resize is not None:
             anomaly_map = F.interpolate(

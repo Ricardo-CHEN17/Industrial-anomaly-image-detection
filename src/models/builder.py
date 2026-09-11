@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ _BUILD_PARAMS = (
     "loss",
     "image_score_resize",
     "image_score_top_ratio",
+    "image_scoring",
     "encoder_pretrained_path",
 )
 
@@ -81,10 +83,11 @@ def _load_score_range(model_dir: Path) -> tuple[float, float, float, float]:
     pixel_min = data.get("pixel_min", 0.0) # Fallback if missing
     pixel_max = data.get("pixel_max", 1.0)
     
-    if not isinstance(min_val, (int, float)) or isinstance(min_val, bool):
-        raise ModelLoadError(f"minmax 参数缺少合法的 min 字段: {minmax_path}")
-    if not isinstance(max_val, (int, float)) or isinstance(max_val, bool):
-        raise ModelLoadError(f"minmax 参数缺少合法的 max 字段: {minmax_path}")
+    values = (min_val, max_val, pixel_min, pixel_max)
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in values):
+        raise ModelLoadError(f"minmax 参数必须是数值: {minmax_path}")
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ModelLoadError(f"minmax 参数必须是有限数值: {minmax_path}")
     if float(min_val) >= float(max_val):
         raise ModelLoadError(f"minmax 参数 min 必须小于 max: {min_val!r} >= {max_val!r}")
     if float(pixel_min) >= float(pixel_max):
@@ -137,6 +140,13 @@ def load_model_from_dir(
         if not isinstance(manifest_model, dict):
             raise ModelLoadError(f"manifest 的 model 字段必须是 JSON 对象: {manifest_model!r}")
         model_cfg.update(manifest_model)
+    scoring = model_cfg.get("image_scoring")
+    with (model_dir / MINMAX_PATH).open("r", encoding="utf-8") as stream:
+        calibrated_scoring = json.load(stream).get("image_scoring")
+    if scoring != calibrated_scoring:
+        raise ModelLoadError(
+            "image_scoring 与校准参数不一致，请使用当前训练入口重新生成完整模型包"
+        )
 
     try:
         model = _build_model(model_dir, model_cfg)
